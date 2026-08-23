@@ -195,7 +195,9 @@ Before opening an issue:
 
 - **Maintainer:** Konaimav2
 - **GitHub:** [github.com/Konaimav2](https://github.com/Konaimav2)
+- **Telegram:** [@konaima](https://t.me/konaima)
+- **Email:** [arraffi@arraffi.com](mailto:arraffi@arraffi.com)
 - **Issue tracker:** [https://github.com/Konaimav2/gmail-inbox/issues](https://github.com/Konaimav2/gmail-inbox/issues)
 
-For security concerns (credential leaks, vulnerabilities), **do not** open a public issue — reach out privately via GitHub profile contact details instead.
+For security concerns (credential leaks, vulnerabilities), **do not** open a public issue — reach out privately via Telegram or email instead.
 
