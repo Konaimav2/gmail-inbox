@@ -28,8 +28,7 @@ inbox.db-secrets
 .chrome-profile*/
 .chrome-profile-*/
 .chrome-profile*
-cookies*/
-cookies*
+cookies/
 storage-state*.json
 
 # Screenshots / logs
