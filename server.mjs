@@ -42,6 +42,7 @@ db.exec(`
 CREATE TABLE IF NOT EXISTS accounts(email TEXT PRIMARY KEY, name TEXT, cookie_file TEXT, added_at INTEGER, last_sync INTEGER, last_error TEXT);
 CREATE TABLE IF NOT EXISTS threads(thread_id TEXT, email TEXT, ts INTEGER, subject TEXT, snippet TEXT, PRIMARY KEY(email, thread_id));
 CREATE TABLE IF NOT EXISTS messages(msg_id TEXT, email TEXT, thread_id TEXT, ts INTEGER, subject TEXT, sender TEXT, sender_name TEXT, recipients TEXT, body_html TEXT, PRIMARY KEY(email, msg_id));
+CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(email, ts DESC);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT, updated_at INTEGER);
 CREATE TABLE IF NOT EXISTS web_sessions(id INTEGER PRIMARY KEY AUTOINCREMENT, token_hash TEXT UNIQUE, created INTEGER, expiry INTEGER, ip TEXT, last_seen INTEGER);
 `);
@@ -623,7 +624,7 @@ function searchMessages(params, extraEmail) {
   like("sender_name", params.sendName);
   like("subject", params.subject);
   if (extraEmail) { } // covered by like above
-  const order = params.timeSort === "asc" ? "rowid ASC" : "rowid DESC";
+  const order = params.timeSort === "asc" ? "ts ASC" : "ts DESC";
   const size = Math.min(+(params.size || 20), 200);
   const num = Math.max(+(params.num || 1), 1);
   const offset = (num - 1) * size;
