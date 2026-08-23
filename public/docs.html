@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>API Docs — Mail Hub</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+<style>
+:root{--bg:#0b0e13;--bg2:#12161d;--bg3:#171c24;--line:#232935;--line2:#2e3545;
+  --txt:#e7eaf0;--mut:#9aa4b2;--dim:#8893a3;--acc:#4f8cff;--acc2:#7ab8ff;
+  --ok:#2fb96b;--warn:#e3b341;--err:#e5534b;--mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;--t:160ms}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--txt);font-size:14px;line-height:1.6;overflow-x:hidden}
+a{color:var(--acc2)}
+header{position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:14px;height:56px;padding:0 18px;background:rgba(11,14,19,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:11px}
+.brand .mark{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,#2d63e0,#7a5cff);color:#fff;display:flex;align-items:center;justify-content:center;font-size:16px}
+.brand h1{font-size:16px;margin:0;font-weight:700}
+.brand h1 .dot{color:var(--acc)}
+.hdr-actions{margin-left:auto;display:flex;gap:10px;align-items:center}
+.hdr-actions a{display:inline-flex;align-items:center;gap:7px;height:36px;padding:0 13px;border-radius:9px;text-decoration:none;border:1px solid var(--line2);background:var(--bg3);color:var(--txt);font-size:12.5px}
+.hdr-actions a:hover{border-color:var(--acc)}
+.wrap{display:grid;grid-template-columns:250px 1fr;gap:0;max-width:1200px;margin:0 auto}
+nav{position:sticky;top:56px;height:calc(100vh - 56px);overflow-y:auto;padding:22px 10px 40px;border-right:1px solid var(--line)}
+nav .lbl{font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);padding:10px 12px 6px}
+nav a{display:block;padding:7px 12px;border-radius:8px;font-size:13px;color:var(--mut);text-decoration:none;transition:background var(--t),color var(--t)}
+nav a:hover{background:var(--bg3);color:var(--txt)}
+nav a .m{display:inline-block;width:26px;font-size:10px;font-weight:700}
+nav a .m.get{color:#3fb950}.m.post{color:#d29922}.m.del{color:#f85149}
+main{padding:28px 34px 80px;min-width:0}
+main h2{font-size:20px;margin:34px 0 10px;font-weight:700;letter-spacing:-.01em}
+main h2:first-child{margin-top:0}
+main h3{font-size:15px;margin:22px 0 8px;font-weight:650}
+.lead{color:var(--mut);margin:0 0 6px}
+.card{background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:12px 0}
+.ep{background:var(--bg2);border:1px solid var(--line);border-left:3px solid var(--acc);border-radius:12px;padding:14px 18px;margin:14px 0}
+.ep .path-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.ep .mm{font-size:11px;font-weight:700;letter-spacing:.04em;border-radius:6px;padding:3px 8px}
+.ep .mm.get{background:#14371f;color:#3fb950}.ep .mm.post{background:#3d2f10;color:#d29922}.ep .mm.del{background:#3d1412;color:#f85149}
+.ep .path{font-family:var(--mono);font-size:13.5px;font-weight:600;word-break:break-all}
+.ep .auth{font-size:11px;color:var(--dim);margin-left:auto}
+.ep .desc{color:var(--mut);font-size:13px;margin:8px 0 12px}
+pre{background:#0d1117;border:1px solid var(--line);border-radius:10px;padding:13px 15px;overflow-x:auto;font-family:var(--mono);font-size:12.3px;line-height:1.55;margin:8px 0}
+code{font-family:var(--mono);font-size:12px;background:var(--bg3);border-radius:5px;padding:1.5px 5px}
+pre code{background:none;padding:0}
+table{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0}
+th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);padding:7px 10px;border-bottom:1px solid var(--line2)}
+td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top;color:var(--mut)}
+td:first-child{color:var(--txt);font-family:var(--mono);font-size:12.5px}
+.kbd{display:inline-block;background:var(--bg3);border:1px solid var(--line2);border-bottom-width:2px;border-radius:6px;padding:1px 7px;font-size:11px;font-family:var(--mono)}
+.badge{display:inline-flex;align-items:center;gap:6px;background:var(--bg3);border:1px solid var(--line2);border-radius:999px;font-size:11px;padding:3px 11px;font-weight:600}
+.badge .fa{color:var(--ok)}
+.tip{background:#10251d;border:1px solid #1f5036;border-radius:10px;padding:12px 15px;font-size:13px;color:#9fd9b5;margin:12px 0}
+.creds .cred-row{display:flex;align-items:center;gap:8px;margin:10px 0;flex-wrap:wrap}
+.creds .cred-row>span{font-size:12px;color:var(--dim);width:90px;flex:none}
+.creds .cred{font-family:var(--mono);font-size:12.5px;background:var(--bg3);border:1px solid var(--line2);border-radius:8px;padding:6px 10px;word-break:break-all;flex:1;min-width:150px}
+.iconbtn{background:var(--bg3);border:1px solid var(--line2);color:var(--txt);border-radius:8px;width:30px;height:30px;cursor:pointer;flex:none}
+.iconbtn:hover{border-color:var(--acc)}
+.rotate{background:var(--acc);color:#fff;border:0;border-radius:8px;padding:7px 12px;cursor:pointer;font-weight:600;flex:none}
+.rotate:hover{filter:brightness(1.1)}
+.rotate:disabled{opacity:.5;cursor:not-allowed}
+.tools{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:16px 0 6px}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{border:1px solid var(--line2);background:var(--bg3);color:var(--mut);border-radius:999px;padding:4px 12px;font-size:12px;cursor:pointer;transition:all var(--t)}
+.chip:hover{color:var(--txt)}
+.chip.on{background:#1a2a4a;border-color:var(--acc);color:var(--acc2)}
+#search{flex:1;min-width:180px;height:34px;background:var(--bg3);border:1px solid var(--line2);border-radius:9px;color:var(--txt);padding:0 12px;font-size:13px}
+#search:focus{outline:2px solid var(--acc);outline-offset:-1px}
+.cpy{position:absolute;top:8px;right:8px;border:1px solid var(--line2);background:var(--bg3);color:var(--mut);border-radius:7px;padding:3px 9px;font-size:11px;cursor:pointer;opacity:0;transition:opacity var(--t)}
+pre{position:relative}
+pre:hover .cpy{opacity:1}
+.hidden{display:none!important}
+.navtoggle{display:none;align-items:center;justify-content:center;gap:7px;height:36px;padding:0 13px;border-radius:9px;border:1px solid var(--line2);background:var(--bg3);color:var(--txt);font-size:12.5px;cursor:pointer}
+.navtoggle:hover{border-color:var(--acc)}
+@media(max-width:900px){
+  .wrap{grid-template-columns:1fr}
+  nav{display:none;position:static;height:auto;border-right:0;border-bottom:1px solid var(--line)}
+  nav.open{display:block}
+  .navtoggle{display:inline-flex}
+  main{padding:20px 18px 60px;overflow-x:hidden}
+  main h2{overflow-wrap:break-word}
+  .table-wrap{overflow-x:auto}
+  table{display:block;max-width:100%;overflow-x:auto;white-space:nowrap}
+  .ep .path{font-size:12px}
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="mark"><i class="fa-solid fa-book"></i></div>
+    <h1>Mail<span class="dot">Hub</span> <span style="font-weight:500;font-size:12px;color:var(--dim)">/ API docs</span></h1>
+  </div>
+  <div class="hdr-actions">
+    <button class="navtoggle" onclick="document.querySelector('nav').classList.toggle('open')" aria-label="toggle menu"><i class="fa-solid fa-bars"></i></button>
+    <a href="/"><i class="fa-solid fa-arrow-left"></i> back</a>
+    <a href="/logout"><i class="fa-solid fa-arrow-right-from-bracket"></i> logout</a>
+  </div>
+</header>
+<div class="wrap">
+<nav>
+  <div class="lbl">Reference</div>
+  <a href="#overview"><span class="m"></span>Overview</a>
+  <a href="#auth"><span class="m"></span>Authentication</a>
+  <a href="#endpoints"><span class="m"></span>Endpoints</a>
+  <a href="#login"><span class="m post">POST</span>/login</a>
+  <a href="#accounts"><span class="m get">GET</span>/api/accounts</a>
+  <a href="#emailList"><span class="m post">POST</span>/api/public/emailList</a>
+  <a href="#email-list"><span class="m post">POST</span>/api/email/list</a>
+  <a href="#email-thread"><span class="m get">GET</span>/api/.../messages/:id</a>
+  <a href="#sse"><span class="m get">GET</span>/api/sse</a>
+  <a href="#rotate"><span class="m post">POST</span>/api/rotate</a>
+  <a href="#schemas"><span class="m"></span>Schemas</a>
+  <a href="#errors"><span class="m"></span>Errors</a>
+  <a href="#limits"><span class="m"></span>Limits &amp; retention</a>
+  <a href="#ops"><span class="m"></span>Operations</a>
+  <a href="#faq"><span class="m"></span>Troubleshooting</a>
+</nav>
+<main>
+
+<div class="tools">
+  <input id="search" type="search" placeholder="filter endpoints… e.g. emailList, accounts, sse" oninput="filters()">
+  <div class="chips">
+    <button class="chip on" data-f="all" onclick="setF('all',this)">all</button>
+    <button class="chip" data-f="get" onclick="setF('get',this)">GET</button>
+    <button class="chip" data-f="post" onclick="setF('post',this)">POST</button>
+  </div>
+</div>
+
+<h2 id="overview">Overview</h2>
+<p class="lead">Cookie-based multi-Gmail inbox. Local fetch of <code>mail.google.com</code> with saved sessions, 30-day history, realtime new-mail push (only for the <b>selected</b> account), cloud-mail compatible envelope.</p>
+<div class="card">
+<b>Base URL</b> <code>__BASE_URL__</code><br>
+<b>Envelope</b> <code>{ "code": 200, "message": "success", "data": ... }</code><br>
+<b>Realtime</b> SSE on <code>/api/sse</code> — events: <span class="badge"><i class="fa-solid fa-bolt"></i> update</span> <span class="badge"><i class="fa-solid fa-envelope"></i> new</span>
+</div>
+
+<h2 id="auth">Authentication</h2>
+<table>
+<tr><th>Scope</th><th>Routes</th><th>Header</th><th>Secret</th></tr>
+<tr><td>page session</td><td><code>/</code>, <code>/api/accounts</code>, <code>/api/sse</code>, <code>/api/select</code></td><td>browser cookie <code>gsess</code></td><td>login password (7-day signed cookie)</td></tr>
+<tr><td>full API</td><td>all <code>/api/*</code> except public</td><td><code>Authorization: __API_KEY__</code> or <code>X-API-Key: __API_KEY__</code></td><td>API key (72-char)</td></tr>
+<tr><td>public</td><td><code>/api/public/*</code></td><td><code>Authorization: __PUBLIC_TOKEN__</code></td><td>public token (read-only)</td></tr>
+<tr><td>docs</td><td><code>/docs</code></td><td>same session cookie <code>gsess</code></td><td>same login password (one login for app + docs)</td></tr>
+</table>
+
+<div class="card creds">
+  <b>Your credentials</b>
+  <div class="cred-row"><span>API key</span>
+    <code class="cred" id="apikey">••••••••••••••••</code>
+    <button class="iconbtn" onclick="toggleCred('apikey')" title="show/hide"><i class="fa-solid fa-eye"></i></button>
+    <button class="iconbtn" onclick="copyCred('apikey')" title="copy"><i class="fa-regular fa-copy"></i></button>
+    <button class="btn rotate" onclick="rotateKey()" title="generate a new key"><i class="fa-solid fa-rotate-right"></i> rotate</button>
+  </div>
+  <div class="cred-row"><span>Public token</span>
+    <code class="cred" id="pubtoken">••••••••••••••••</code>
+    <button class="iconbtn" onclick="toggleCred('pubtoken')" title="show/hide"><i class="fa-solid fa-eye"></i></button>
+    <button class="iconbtn" onclick="copyCred('pubtoken')" title="copy"><i class="fa-regular fa-copy"></i></button>
+  </div>
+  <div class="tip" style="margin-top:10px"><i class="fa-solid fa-circle-info"></i> Hidden by default so a screenshot never leaks it. Click the eye to reveal, or <b>rotate</b> to generate a new API key (the old one stops working immediately).</div>
+</div>
+
+<h3>API key vs public token — what each is for</h3>
+<table class="keytable">
+<tr><th></th><th>API key (<code>mh_live_…</code>, 72 chars)</th><th>Public token (32 chars)</th></tr>
+<tr><td><b>Purpose</b></td><td>Full, privileged access to every endpoint (list accounts, read any mail, refresh, rotate). Your private master credential.</td><td>Read-only access to just the <b>public</b> endpoints (<code>/api/public/emailList</code>). Lets you fetch mail into your own app without exposing write/management powers.</td></tr>
+<tr><td><b>Routes</b></td><td><code>/api/accounts</code>, <code>/api/email/list</code>, <code>/api/email/latest</code>, <code>/api/allEmail/list</code>, <code>/api/sse</code>, <code>/api/rotate</code></td><td><code>/api/public/emailList</code> only</td></tr>
+<tr><td><b>Header</b></td><td><code>Authorization: &lt;API_KEY&gt;</code> or <code>X-API-Key: &lt;API_KEY&gt;</code></td><td><code>Authorization: &lt;PUBLIC_TOKEN&gt;</code></td></tr>
+<tr><td><b>Reveal on docs</b></td><td>Eye toggle (hidden by default) + <b>rotate</b> button</td><td>Eye toggle (hidden by default)</td></tr>
+<tr><td><b>Share it?</b></td><td>⚠️ <b>Never</b> — treat like a password. Anyone with it can read every inbox.</td><td>Safe to embed in your own client/app if it only needs to list mail.</td></tr>
+</table>
+<div class="tip"><i class="fa-solid fa-lightbulb"></i> <b>Use case:</b> keep the <b>API key</b> secret for your own server-side scripts. If you're building a public-facing widget or a read-only client, issue/use the <b>public token</b> so a leak can't be escalated into a full account takeover.</div>
+<!--CREDS-->
+<script>
+function credVal(id){ return id==='apikey' ? (window.__CREDS__?.apiKey||'') : (window.__CREDS__?.publicToken||''); }
+function toggleCred(id){ const el=document.getElementById(id); const v=credVal(id); if(el.textContent===v){ el.textContent='••••••••••••••••'; } else { el.textContent=v; } }
+function copyCred(id){ const v=credVal(id); if(!v) return; navigator.clipboard.writeText(v).then(()=>{ const b=event.currentTarget; b.innerHTML='<i class="fa-solid fa-check"></i>'; setTimeout(()=>b.innerHTML='<i class="fa-regular fa-copy"></i>',1200); }); }
+async function rotateKey(){
+  const btn=document.querySelector('.rotate'); btn.disabled=true; btn.innerHTML='<i class="fa-solid fa-circle-notch fa-spin"></i> rotating…';
+  try {
+    const r=await fetch('/api/rotate',{method:'POST'});
+    const j=await r.json().catch(()=>({}));
+    if(j?.data?.apiKey){ window.__CREDS__.apiKey=j.data.apiKey; document.getElementById('apikey').textContent=j.data.apiKey; alert('API key rotated. Copy it now — show it to reveal.'); }
+    else alert('Rotate failed: '+(j?.message||'unknown'));
+  } catch(e){ alert('Rotate failed: '+e.message); }
+  btn.disabled=false; btn.innerHTML='<i class="fa-solid fa-rotate-right"></i> rotate';
+}
+</script>
+
+<div class="tip"><i class="fa-solid fa-circle-info"></i>  Native routes (<code>/api/accounts</code>, <code>/api/sse</code>, <code>/api/select</code>) require <code>X-API-Key</code> or a page session. Cloud routes (<code>/api/email/*</code>, <code>/api/account/*</code>, <code>/api/public/*</code>) use <code>Authorization: &lt;key&gt;</code> (no <code>Bearer</code> prefix).</div>
+
+<h2 id="endpoints">Endpoints</h2>
+
+<div class="ep" id="login" data-method="post">
+  <div class="path-row"><span class="mm post">POST</span><span class="path">/login</span><span class="auth">auth: password</span></div>
+  <div class="desc">Page login — returns API key + public token, sets the <code>gsess</code> session cookie (7 days, restart-proof HMAC).</div>
+  <b>Request</b>
+  <pre>curl -X POST __BASE_URL__/login -H "Content-Type: application/json" \
+  -d '{"password":"YOUR_PAGE_PASSWORD"}'</pre>
+  <b>Response 200</b>
+  <pre>{ "apiKey": "__API_KEY__", "publicToken": "__PUBLIC_TOKEN__" }</pre>
+  <b>Errors</b><br><code>401</code> bad password · <code>429</code> blocked (5 min after 20 fails/60s)
+</div>
+
+<div class="ep" id="email-thread" data-method="get">
+  <div class="path-row"><span class="mm get">GET</span><span class="path">/api/accounts/&lt;email&gt;/messages/&lt;thread_id&gt;</span><span class="auth">auth: full (X-API-Key or session)</span></div>
+  <div class="desc">Read a full thread with HTML bodies. Native REST (the web app's mail viewer).</div>
+  <pre>curl -H "X-API-Key: &lt;YOUR_API_KEY&gt;" "__BASE_URL__/api/accounts/you@gmail.com/messages/thread-f:1234567890"</pre>
+  <b>Response (example, dummy data)</b>
+  <pre>[ { "msg_id": "msg-f:1234567890", "thread_id": "thread-f:1234567890",
+      "subject": "Welcome to Acme", "sender": "no-reply@acme.com",
+      "sender_name": "Acme", "recipients": "you@gmail.com",
+      "body_html": "<div>Hi there, thanks for signing up!</div>" } ]</pre>
+</div>
+
+<div class="ep" id="accounts" data-method="get">
+  <div class="path-row"><span class="mm get">GET</span><span class="path">/api/accounts</span><span class="auth">auth: full (X-API-Key or session)</span></div>
+  <div class="desc">List all logged-in Gmail accounts with sync state and errors.</div>
+  <pre>curl -H "X-API-Key: &lt;YOUR_API_KEY&gt;" __BASE_URL__/api/accounts</pre>
+  <b>Response (example, dummy data)</b>
+  <pre>[ { "email": "you@gmail.com", "last_sync": 1787249110549, "last_error": null } ]</pre>
+</div>
+
+<div class="ep" id="emailList" data-method="post">
+  <div class="path-row"><span class="mm post">POST</span><span class="path">/api/public/emailList</span><span class="auth">auth: public token</span></div>
+  <div class="desc">Search the inbox across all accounts. Public endpoint — use the <b>public token</b>.</div>
+  <pre>curl -X POST __BASE_URL__/api/public/emailList \
+  -H "Authorization: &lt;PUBLIC_TOKEN&gt;" -H "Content-Type: application/json" \
+  -d '{"size":3}'</pre>
+  <b>Response (example, dummy data)</b>
+  <pre>{ "code": 200, "message": "success", "data": [
+  { "emailId": 1, "sendEmail": "no-reply@acme.com", "sendName": "Acme",
+    "subject": "Welcome to Acme", "toEmail": "you@gmail.com", "type": 0,
+    "createTime": 1787248877000, "content": "", "text": "Hi there, thanks for signing up!",
+    "isDel": 0 } ] }</pre>
+  <b>Params</b>
+  <table><tr><th>field</th><th>type</th><th>meaning</th></tr>
+  <tr><td>toEmail</td><td>string</td><td>account email, LIKE filter</td></tr>
+  <tr><td>sendEmail</td><td>string</td><td>sender email, LIKE filter</td></tr>
+  <tr><td>sendName</td><td>string</td><td>sender name, LIKE filter</td></tr>
+  <tr><td>subject</td><td>string</td><td>subject, LIKE filter</td></tr>
+  <tr><td>num</td><td>int</td><td>page (1-based)</td></tr>
+  <tr><td>size</td><td>int</td><td>page size (default 20, max 100)</td></tr>
+  <tr><td>timeSort</td><td>string</td><td><code>asc</code> | <code>desc</code></td></tr></table>
+</div>
+
+<div class="ep" id="email-list" data-method="post">
+  <div class="path-row"><span class="mm post">POST</span><span class="path">/api/email/list</span><span class="auth">auth: full (API key)</span></div>
+  <div class="desc">Cloud-mail email list, optionally scoped to one account. Use the <b>API key</b>.</div>
+  <pre>curl -X POST __BASE_URL__/api/email/list \
+  -H "Authorization: &lt;API_KEY&gt;" -H "Content-Type: application/json" \
+  -d '{"size":3,"accountEmail":"you@gmail.com"}'</pre>
+  <b>Response (example, dummy data)</b>
+  <pre>{ "code": 200, "message": "success", "data": [
+  { "emailId": 1, "subject": "Welcome to Acme", "toEmail": "you@gmail.com" } ] }</pre>
+</div>
+
+<div class="ep" id="sse" data-method="get">
+  <div class="path-row"><span class="mm get">GET</span><span class="path">/api/sse</span><span class="auth">auth: full (X-API-Key or session)</span></div>
+  <div class="desc">Realtime event stream. <b>Only the selected account</b> is polled (set via <code>/api/select</code> on the app). Event types: <code>update</code> (thread list refreshed), <code>new</code> (new mail detected, payload <code>{email, unread, ts}</code>).</div>
+  <pre>curl -N -H "X-API-Key: &lt;YOUR_API_KEY&gt;" __BASE_URL__/api/sse</pre>
+  <b>Stream (example)</b>
+  <pre>event: update
+data: {"ts":1787249110549}</pre>
+</div>
+
+<div class="ep" id="rotate" data-method="post">
+  <div class="path-row"><span class="mm post">POST</span><span class="path">/api/rotate</span><span class="auth">auth: full (current X-API-Key or session)</span></div>
+  <div class="desc">Rotate the API key. Generates a new key, stores it in the local DB, and returns it. The old key stops working immediately.</div>
+  <pre>curl -X POST __BASE_URL__/api/rotate -H "X-API-Key: &lt;YOUR_API_KEY&gt;"</pre>
+  <b>Response (example)</b>
+  <pre>{ "code": 200, "message": "success", "data": { "apiKey": "mh_live_&lt;new random 64-hex&gt;" } }</pre>
+</div>
+
+<h2 id="schemas">Schemas</h2>
+<table>
+<tr><th>object</th><th>fields</th></tr>
+<tr><td>Account</td><td><code>email</code>, <code>last_sync</code> (epoch ms), <code>last_error</code> (string|null)</td></tr>
+<tr><td>Thread</td><td><code>thread_id</code>, <code>subject</code>, <code>sender</code>, <code>sender_name</code>, <code>ts</code>, <code>snippet</code> (text)</td></tr>
+<tr><td>EmailRow</td><td><code>emailId</code> (rowid), <code>sendEmail</code>, <code>sendName</code>, <code>subject</code>, <code>toEmail</code>, <code>type</code>, <code>createTime</code> (epoch ms), <code>content</code> (html), <code>text</code>, <code>isDel</code></td></tr>
+<tr><td>CloudError</td><td><code>code</code>, <code>message</code></td></tr>
+</table>
+
+<h2 id="errors">Errors</h2>
+<table>
+<tr><th>status</th><th>code/message</th><th>when</th></tr>
+<tr><td>400</td><td>json / bad json</td><td>malformed body</td></tr>
+<tr><td>401</td><td>auth / authExpired / publicTokenFail / bad password</td><td>bad or missing credential</td></tr>
+<tr><td>404</td><td>nf / not found</td><td>unknown route</td></tr>
+<tr><td>413</td><td>payload too large</td><td>body &gt; 1 MB</td></tr>
+<tr><td>429</td><td>too many attempts; blocked</td><td>rate limit (20 fails/60s → 5 min block)</td></tr>
+<tr><td>501</td><td>not supported</td><td><code>/api/email/delete</code> (no destructive API intended)</td></tr>
+</table>
+
+<h2 id="limits">Limits &amp; retention</h2>
+<ul>
+<li>History: 30 days per account (<code>newer_than:30d</code>), stored in SQLite.</li>
+<li>Full sync every 5h (<code>SYNC_MINUTES=300</code>) for all accounts — keeps Google sessions active.</li>
+<li>Realtime atom poll every 120s — <b>selected account only</b>.</li>
+<li>Request body cap 1 MB; rate limit 20 failed auths/60s per IP.</li>
+<li>Cookies persist as JSON (never logged, gitignored); dead sessions auto-quarantine to <code>cookies/invalid/</code>.</li>
+</ul>
+
+<h2 id="ops">Operations</h2>
+<table>
+<tr><th>script</th><th>purpose</th></tr>
+<tr><td><code>scripts/run-batch.mjs</code></td><td>batch re-login of accounts from <code>list.txt</code> (VNC-visible, fixed delays, validates cookie before success)</td></tr>
+<tr><td><code>scripts/check-cookies.mjs</code></td><td>validate stored cookies against real Gmail data marker</td></tr>
+<tr><td><code>scripts/extract-session.mjs</code></td><td>dump live browser session → cookie file + mark <code>loggedmail.txt</code></td></tr>
+<tr><td><code>scripts/login-run.sh</code></td><td>single-account login helper</td></tr>
+<tr><td><code>scripts/cookie-watch.mjs</code></td><td>watch cookie files for expiry</td></tr>
+<tr><td><code>server.mjs</code></td><td>the whole service (PM2 app <code>gmail-inbox</code> on :8790)</td></tr>
+</table>
+
+<h2 id="faq">Troubleshooting</h2>
+<table>
+<tr><th>symptom</th><th>cause → fix</th></tr>
+<tr><td><code>403</code> on public edge, browsers work</td><td>Cloudflare bot-block of odd UAs → use browser UA</td></tr>
+<tr><td><code>429</code></td><td>too many failed logins → wait 5 min</td></tr>
+<tr><td>account shows error badge</td><td>cookie expired → re-login via <code>run-batch.mjs</code> or VNC manual</td></tr>
+<tr><td>session dies on restart?</td><td>no — HMAC-signed cookie + persisted secret, restart-proof</td></tr>
+<tr><td>no realtime mail</td><td>only the <b>selected</b> account is polled → switch account in the dropdown</td></tr>
+</table>
+
+<script>
+function setF(f,btn){document.querySelectorAll('.chip').forEach(c=>c.classList.toggle('on',c===btn));window._f=f;filters();}
+function filters(){
+  const q=(document.getElementById('search').value||'').toLowerCase();
+  const f=window._f||'all';
+  document.querySelectorAll('.ep').forEach(ep=>{
+    const byF=f==='all'||ep.dataset.method===f;
+    const byQ=!q||(ep.textContent.toLowerCase().indexOf(q)>=0);
+    ep.classList.toggle('hidden',!(byF&&byQ));
+  });
+}
+document.querySelectorAll('pre').forEach((pre,i)=>{
+  const b=document.createElement('button'); b.className='cpy'; b.textContent='copy';
+  b.onclick=()=>{navigator.clipboard.writeText(pre.innerText).then(()=>{b.textContent='✓ copied';setTimeout(()=>b.textContent='copy',1400);});};
+  pre.appendChild(b);
+});
+</script>
+</main>
+</div>
+</body>
+</html>

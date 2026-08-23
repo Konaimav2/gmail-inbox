@@ -1,0 +1,44 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+.public-token
+.session-secret
+.2fa-secrets
+inbox.db-secrets
+*credentials*
+*secrets*
+
+# Runtime data
+list.txt
+loggedmail.txt
+failed.txt
+accounts.txt
+inbox.db
+inbox.db-wal
+inbox.db-shm
+inbox.db-secrets
+*.db
+*.db-*
+*.sqlite*
+*-wal
+*-shm
+
+# Browser profiles
+.chrome-profile*/
+.chrome-profile-*/
+.chrome-profile*
+cookies*/
+cookies*
+storage-state*.json
+
+# Screenshots / logs
+screenshots/
+logs/
+*.log
+
+# Backups
+_backup_files/
+
+# Node
+node_modules/

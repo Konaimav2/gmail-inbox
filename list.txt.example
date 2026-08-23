@@ -1,0 +1,19 @@
+# list.txt format — one account per line
+#
+#   email|password
+#
+# - The FIRST | separates email from password.
+# - The password is EVERYTHING after the first | — it may contain |, \, @, &, etc.
+#
+# Optional trailing 2FA token (short numeric code, ≤8 digits, after a final |):
+#   email|password|123456
+#
+# Examples:
+#
+#   user1@gmail.com|myP@ssw0rd
+#   user2@gmail.com|pass-with|pipes-and\backslashes
+#   user3@gmail.com|PlainPassword123
+#   user4@gmail.com|realPassword|482103        <- 482103 is the 2FA token
+#
+# NOTE: if your password genuinely ENDS with "|" + digits, it will be read as 2FA.
+# Avoid that, or edit so the password isn't numeric-after-a-final-bar.

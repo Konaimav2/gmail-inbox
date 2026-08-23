@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Mail Hub — Login</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+
+<style>
+:root{--bg:#0b0e13;--bg2:#12161d;--bg3:#171c24;--line:#232935;--txt:#e7eaf0;--mut:#9aa4b2;--acc:#4f8cff}
+*{box-sizing:border-box}
+body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--txt);margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center}
+.card{background:var(--bg2);border:1px solid var(--line);border-radius:14px;padding:30px 34px;width:340px;max-width:92vw;box-shadow:0 16px 50px #0006}
+h1{font-size:19px;margin:0 0 4px}
+p{color:var(--mut);font-size:13px;margin:0 0 18px}
+input{width:100%;background:var(--bg3);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:12px;font-size:16px;margin-bottom:12px}
+input:focus{outline:2px solid var(--acc);outline-offset:1px}
+button{width:100%;background:linear-gradient(180deg,#2d63e0,#2453c6);color:#fff;border:0;border-radius:9px;padding:12px;font-size:16px;font-weight:600;cursor:pointer;min-height:48px;transition:filter 160ms ease}
+button:hover{filter:brightness(1.1)}
+button:active{transform:translateY(1px)}
+.err{color:#ef5350;font-size:13px;min-height:18px;margin-top:10px}
+.row{display:flex;gap:8px}
+.row input{flex:1;margin-bottom:12px}
+.row .eye{width:52px;flex:none;background:var(--bg3);border:1px solid var(--line);border-radius:9px;color:var(--mut);cursor:pointer;height:50px}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1><i class="fa-solid fa-envelope-open-text" style="color:var(--acc)"></i> Mail Hub</h1>
+  <p>Sign in to your inbox console.</p>
+  <label for="pw" style="display:block;font-size:12px;color:var(--mut);margin-bottom:6px">Password</label>
+  <div class="row">
+    <input type="password" id="pw" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter')login()" autofocus>
+    <button class="eye" onclick="togglePw(this)" aria-label="show password" type="button"><i class="fa-regular fa-eye"></i></button>
+  </div>
+  <button onclick="login()">Sign in</button>
+  <div class="err" id="err" role="alert"></div>
+</div>
+<script>
+function togglePw(b){const i=document.getElementById('pw');i.type=i.type==='password'?'text':'password';b.innerHTML=i.type==='password'?'<i class="fa-regular fa-eye"></i>':'<i class="fa-regular fa-eye-slash"></i>';document.getElementById('err').textContent='';}
+async function login(){
+  const pw=document.getElementById('pw').value;
+  const r=await fetch('/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
+  if(r.ok){
+    const d=await r.json().catch(()=>({}));
+    if(d.apiKey){sessionStorage.setItem('mailhub_creds', JSON.stringify(d));}
+    // one login unlocks both mail and docs; return to where the user was headed
+    location.href=new URLSearchParams(location.search).get('next')||'/';
+  } else document.getElementById('err').textContent='Wrong password — try again';
+}
+document.getElementById('pw').addEventListener('input',()=>document.getElementById('err').textContent='');
+</script>
+</body>
+</html>
