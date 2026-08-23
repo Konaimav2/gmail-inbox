@@ -283,8 +283,8 @@ function renderList(){
   const tcount=$('thcount'); if(tcount) tcount.textContent=threads.length;
   // show home placeholder ONLY when the list is truly empty and nothing is loading
   $('home').style.display = threads.length===0 ? 'flex' : 'none';
-  // sort ascending (oldest first) so the list reads naturally top-to-bottom
-  const sorted = [...threads].sort((a,b)=>(a.ts||0)-(b.ts||0));
+  // sort descending (newest first) so the list reads naturally top-to-bottom
+  const sorted = [...threads].sort((a,b)=>(b.ts||0)-(a.ts||0));
   $('list').innerHTML=sorted.map(t=>`<div class="msg" role="button" tabindex="0" onclick="openThread('${esc(t.thread_id)}')" onkeydown="if(event.key==='Enter')openThread('${esc(t.thread_id)}')">
     <div class="subj">${esc(subjFallback(t))}</div>
     <div class="snip">${esc(t.snippet||'')}</div>
