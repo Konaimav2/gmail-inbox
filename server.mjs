@@ -449,9 +449,9 @@ async function checkMail(email) {
     const full = (x.match(/<fullcount>(\d+)<\/fullcount>/) || [])[1] || "0";
     const seen = lastAtom.get(email);
     if (seen !== undefined && +full > seen) {
-      // new mail since last poll
-      const ids = [...x.matchAll(/<id>([^<]+)<\/id>/g)].slice(1).map((m) => m[1]);
-      console.log(`[gmail-inbox] NEW MAIL ${email} (${full} unread)`);
+      // new mail since last poll — fetch & store immediately
+      console.log(`[gmail-inbox] NEW MAIL ${email} (${full} unread) — fetching...`);
+      syncAccount(email).catch(() => {});
       broadcast("new", { email, unread: +full, ts: Date.now() });
     }
     lastAtom.set(email, +full);
