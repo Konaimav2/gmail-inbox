@@ -12,7 +12,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 // prefer system chrome; fall back to agent-browser
 // prefer known-working headful binaries over snap chromium (snap often fails to bind CDP headless)
 const CHROME_CANDIDATES = [
-  "/usr/bin/chromium-browser",
+  "/root/.agent-browser/browsers/chrome-150.0.7871.46/chrome",
   "google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "/usr/bin/chromium-browser",
 ];
 const CHROME = (() => {
@@ -182,7 +182,7 @@ const detach = (cmd, args) => { const c = spawn(cmd, args, { detached: true, env
 if (!NO_VNC_FLAG) {
   detach("Xvfb", [DISPLAY, "-screen", "0", "1366x900x24", "-ac"]);
   await sleep(1500);
-  detach(CHROME, [`--user-data-dir=${PROFILE}`, "--no-sandbox", "--no-first-run", "--disable-background-networking", "--window-size=1366,900", "--remote-debugging-port=9222", "--remote-debugging-address=127.0.0.1", "about:blank"]);
+  detach(CHROME, [`--user-data-dir=${PROFILE}`, "--no-sandbox", "--no-first-run", "--disable-background-networking", "--window-size=1366,900", "--remote-debugging-port=9222", "about:blank"]);
   await sleep(2500);
   detach("x11vnc", ["-display", DISPLAY, "-forever", "-shared", "-passwd", VNCPASS, "-rfbport", "5900", "-bg", "-o", "/tmp/batch-x11vnc.log"]);
   // WebSocket tunnel + noVNC web UI for human assistance (QR/captcha/phone).
@@ -193,7 +193,7 @@ if (!NO_VNC_FLAG) {
   log(`-> VNC ready: http://${VNC_BIND}:6080/  (password in .env VNC_PASSWORD)`);
 } else {
   log("-> --no-vnc: skipping Xvfb/VNC, starting headless Chromium...");
-  detach(CHROME, [`--user-data-dir=${PROFILE}`, "--no-sandbox", "--no-first-run", "--disable-background-networking", "--window-size=1366,900", "--remote-debugging-port=9222", "--remote-debugging-address=127.0.0.1", "about:blank"]);
+  detach(CHROME, [`--user-data-dir=${PROFILE}`, "--no-sandbox", "--no-first-run", "--disable-background-networking", "--window-size=1366,900", "--remote-debugging-port=9222", "about:blank"]);
   await sleep(2500);
 }
 // wait CDP
@@ -369,7 +369,7 @@ function extractCode(text) {
 }
 const MAILRE = /^https:\/\/mail\.google\.com\/mail/;
 
-// ---- 2FA (local TOTP only) ----
+// ---- 2FA.live auto-fill ----
 // store per-account authenticator secrets in a plaintext file (email|secret),
 // fetched from the 2FA-setup screen (or provided by the user).
 const SECRETS_FILE = join(ROOT, ".2fa-secrets"); // email|base32-secret
@@ -386,7 +386,18 @@ function getSecret(email) {
 async function fetch2FA(email) {
   const secret = getSecret(email);
   if (!secret) return null;
-  // compute TOTP locally (RFC 6238 / HMAC-SHA1, 30s step, 6 digits) — offline, always works
+  // 1) try 2fa.live (the provider the user named) — may be down/renamed, so fall through
+  try {
+    const url = `https://2fa.live/totp/${encodeURIComponent(secret)}`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    const ct = r.headers.get("content-type") || "";
+    if (ct.includes("json")) {
+      const j = await r.json();
+      const code = j?.token || j?.code || j?.data?.token || j?.data?.code;
+      if (code && /^\d{6}$/.test(String(code))) return { code: String(code), source: "2fa.live" };
+    }
+  } catch {}
+  // 2) compute TOTP locally (RFC 6238 / HMAC-SHA1, 30s step, 6 digits) — offline, always works
   try {
     const { createHmac } = await import("node:crypto");
     const base32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -464,22 +475,30 @@ async function loginOne(acc) {
     }
     if (s.inputs.some((x) => x.includes("password"))) { pwField = true; break; }
     if (/reCAPTCHA|I'?m not a robot|Verify you are human|not a robot/i.test(s.text + " " + s.title)) {
-      log("-> Captcha before password input detected; waiting for human to solve in VNC...");
-      // Use a captcha-aware wait: return as soon as the captcha text disappears
-      // (mode "any" isn't safe because we want to be sure the password page appears)
-      const captchaTimeout = Date.now() + 90000;
+      log("-> Captcha before password input detected; waiting for human to solve in VNC (webshare-style token poll)...");
+      // webshare-style: poll for the grecaptcha token to confirm it's actually solved
+      const captchaTimeout = Date.now() + 120000;
       let captchaResolved = false;
+      let grecaptchaToken = "";
       while (Date.now() < captchaTimeout) {
-        await sleep(3000);
+        await sleep(2500);
+        // Poll for grecaptcha token (webshare approach) — confirms real solve
+        try {
+          grecaptchaToken = await evalJs(`(() => { try { const gr = window.grecaptcha; if (gr && gr.getResponse && gr.getResponse()) return gr.getResponse(); } catch(e){}; const inp = document.querySelector('textarea[name="g-recaptcha-response"], input[name="g-recaptcha-response"]'); return inp ? inp.value : ''; })()`) || "";
+        } catch (e) { grecaptchaToken = ""; }
         const st = await state();
-        // captcha text gone + new element = solved
+        // captcha solved = token present OR captcha text gone + advanced
+        if (grecaptchaToken) {
+          captchaResolved = true;
+          log("-> Grecaptcha token obtained — captcha SOLVED (webshare method).");
+          break;
+        }
         if (!/reCAPTCHA|I'?m not a robot|Verify you are human|not a robot/i.test(st.text + " " + st.title)) {
           if (st.inputs.some((x) => x.includes("password")) || /password/i.test(st.text)) {
             captchaResolved = true;
             log("-> Captcha solved! Password field detected.");
             break;
           }
-          // page changed but no password yet — maybe challenge page, let the main loop handle it
           log("-> Captcha text gone, page advanced.");
           captchaResolved = true;
           break;
@@ -487,7 +506,7 @@ async function loginOne(acc) {
       }
       if (!captchaResolved) {
         await screenshot(email);
-        log("-> Captcha not solved after 90s, skipping.");
+        log("-> Captcha not solved after 120s, skipping.");
         return false;
       }
       // Reset the outer loop to re-evaluate current state
@@ -582,7 +601,7 @@ async function loginOne(acc) {
       if (keyMatch) {
         log(`-> Authenticator setup key found: ${keyMatch[1]}`);
         const saved = saveSecretFromScreen(email, keyMatch[1]);
-        log(saved ? "-> Saved 2FA secret; future logins auto-fill" : "-> Could not save 2FA secret");
+        log(saved ? "-> Saved 2FA secret; future logins auto-fill via 2fa.live" : "-> Could not save 2FA secret");
         // try to auto-complete right away: fetch code and type it if a code field is present
         const auto = await fetch2FA(email);
         const stNow = await state();
@@ -700,7 +719,7 @@ async function loginOne(acc) {
       // genuine TOTP / one-time-code entry screen
       const codeInput = st.inputs.find((x) => x.includes("tel") || x.includes("code"));
       if (tok) { log("-> Using provided 2FA token"); const sel = codeInput ? `input[type=tel]` : `input[type=text]`; await setInput(sel, tok); await sleep(300); await clickNext(); await sleep(1500); continue; }
-      // auto-fill from stored local secret if available
+      // auto-fill from 2fa.live if a secret is stored for this account
       const auto = await fetch2FA(email);
       if (auto && codeInput) {
         const sel = codeInput ? `input[type=tel]` : `input[type=text]`;
@@ -791,6 +810,27 @@ async function isDone(acc) {
   return false;
 }
 
+// Normalize proxy string for Chromium --proxy-server:
+//   socks5://user:pass:host:port  -> socks5://user:pass@host:port
+//   socks5://user:pass@host:port  -> unchanged
+//   host:port:user:pass           -> socks5://user:pass@host:port (webshare format)
+function normalizeProxy(raw) {
+  raw = String(raw).trim();
+  let m;
+  // scheme://creds@host:port  (already correct)
+  if (/^(socks4|socks5|socks5h|http|https):\/\/.+@.+:\d+$/.test(raw)) return raw;
+  // scheme://user:pass:host:port  (colon between pass and host — niceproxy format)
+  m = raw.match(/^(socks4|socks5|socks5h|http|https):\/\/([^:]+):([^:]+):([^:]+):(\d+)$/);
+  if (m) return `${m[1]}://${m[2]}:${m[3]}@${m[4]}:${m[5]}`;
+  // host:port:user:pass  (webshare format)
+  m = raw.match(/^([^:\s]+):(\d+):([^:]+):([^:]+)$/);
+  if (m) return `socks5://${m[3]}:${m[4]}@${m[1]}:${m[2]}`;
+  // host:port (no creds)
+  m = raw.match(/^([^:\s]+):(\d+)$/);
+  if (m) return `socks5://${m[1]}:${m[2]}`;
+  return raw;
+}
+
 async function main() {
   // CLI: node run-batch.mjs [email password [2fa]] [--proxy <url|proxy.txt>]
   const argv = process.argv.slice(2);
@@ -814,10 +854,10 @@ async function main() {
         const list = txt.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
         if (!list.length) throw new Error("empty");
         log(`-> Loaded ${list.length} proxies from ${proxyArg}`);
-        return list;
+        return list.map(normalizeProxy);
       } catch (e) { log(`!! Cannot read proxy file ${proxyArg}: ${String(e.message || e)}`); process.exit(1); }
     }
-    return [proxyArg];
+    return [normalizeProxy(proxyArg)];
   })();
   // smart load-balancing proxy assignment:
   // - each proxy logs in 1-3 random accounts first
