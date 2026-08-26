@@ -300,6 +300,65 @@ async function realClick(elExpr) {
   await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: c.x, y: c.y, button: "left", clickCount: 1 });
   return true;
 }
+
+// ── Audio reCAPTCHA auto-solver (VNC becomes OPTIONAL) ──
+// Mirrors webshare's proven flow: find audio iframe/button -> trusted click ->
+// extract mp3 -> transcribe via sibling audio-solver.py -> type answer -> verify.
+// Returns true if the grecaptcha token appears (captcha solved), else false (caller can waitHuman).
+async function solveAudioCaptcha(timeoutMs = 60000) {
+  const t0 = Date.now();
+  // find reCAPTCHA frames (classic v2 AND enterprise)
+  async function findCaptchaFrame() {
+    for (const f of await send("Page.getFrameTree").then(r => r.result?.frameTree ? [r.result.frameTree] : []).catch(() => [])) {
+      // flatten frame tree
+      const walk = (n) => { let out = n.url ? [n] : []; (n.childFrames || []).forEach(c => out = out.concat(walk(c))); return out; };
+      const all = walk(f);
+      for (const fr of all) {
+        if ((fr.url || "").includes("recaptcha") && (/anchor/.test(fr.url) || /bframe/.test(fr.url))) return fr;
+      }
+    }
+    return null;
+  }
+  // audio element is inside the challenge; use main-frame JS to click by title/aria (post-iframe)
+  const clicked = await evalJs(`(() => {
+    const nodes = [...document.querySelectorAll('iframe')];
+    for (const n of nodes) { try { const d = n.contentDocument; if(!d) continue; const b = [...d.querySelectorAll('button,[role=button]')].find(x => /audio/i.test((x.title||'')+' '+(x.getAttribute('aria-label')||''))); if (b) { b.click(); return 'clicked-js'; } } catch(e){} }
+    return null; })()`).catch(() => null);
+  if (clicked === "clicked-js") {
+    log("-> Audio auto-solve: clicked audio switch (JS).");
+    await sleep(2500);
+  }
+  // get audio src
+  const src = await evalJs(`(() => {
+    for (const n of document.querySelectorAll('iframe')) { try { const d = n.contentDocument; if(!d) continue; const a = d.getElementById('audio-source'); if (a && a.src) return a.src; const au = d.querySelector('audio'); if(au && au.currentSrc) return au.currentSrc; const s = d.querySelector('audio source'); if(s && s.src) return s.src; } catch(e){} }
+    return ''; })()`).catch(() => "");
+  if (!src) { log("-> Audio auto-solve: no audio source found."); return false; }
+
+  // transcribe via sibling Python helper (proven pipeline)
+  const { execFileSync } = await import("node:child_process");
+  let answer = "";
+  try {
+    const out = execFileSync("/root/temp/token-harbor/.venv/bin/python3",
+      [__dirname + "/audio-solver.py"], { input: JSON.stringify({ audio_url: src }), encoding: "utf8", timeout: 40000, stdio: ["pipe","pipe","pipe"] });
+    const parsed = JSON.parse(out.trim().split("\n").pop());
+    if (parsed.ok && parsed.answer) { answer = parsed.answer; }
+    else log("-> Audio auto-solve: transcription failed: " + (parsed.error || "?"));
+  } catch (e) { log("-> Audio auto-solve: python helper error: " + String(e).slice(0,80)); return false; }
+  if (!answer) return false;
+  log(`-> Audio auto-solve: heard "${answer}"`);
+
+  // type + verify (trusted), the field may be in any recaptcha frame
+  await evalJs(`(() => { for (const n of document.querySelectorAll('iframe')) { try { const d=n.contentDocument; if(!d) continue; const i=d.getElementById('audio-response'); if(i){ const s=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set; s.call(i, ${JSON.stringify(answer)}); i.dispatchEvent(new Event('input',{bubbles:true})); const v=d.getElementById('recaptcha-verify-button'); if(v) v.click(); return true; } } catch(e){} } return false; })()`).catch(() => false);
+  // confirm token appeared
+  const deadline = t0 + timeoutMs;
+  while (Date.now() < deadline) {
+    await sleep(3000);
+    const tok = await evalJs(`(() => { try { const g=window.grecaptcha; if(g&&g.getResponse&&g.getResponse()) return g.getResponse(); } catch(e){} return ''; })()`).catch(() => "");
+    if (tok) { log("-> Audio auto-solve: SOLVED (token obtained)."); return true; }
+  }
+  log("-> Audio auto-solve: submitted but no token — will fall back to human.");
+  return false;
+}
 // wait for a human to assist (QR scan, captcha solve, phone tap) in VNC.
 // mode "any"   (phone-tap / verify-it's-you): any page change counts as progress/solved.
 // mode "gmail" (QR / captcha / manual verify): must actually reach Gmail (success) before
@@ -475,7 +534,13 @@ async function loginOne(acc) {
     }
     if (s.inputs.some((x) => x.includes("password"))) { pwField = true; break; }
     if (/reCAPTCHA|I'?m not a robot|Verify you are human|not a robot/i.test(s.text + " " + s.title)) {
-      log("-> Captcha before password input detected; waiting for human to solve in VNC (webshare-style token poll)...");
+      log("-> Captcha before password input detected; trying AUDIO AUTO-SOLVER first (VNC optional)...");
+      const autoSolved = await solveAudioCaptcha(45000);
+      if (autoSolved) {
+        log("-> Audio auto-solver handled captcha; continuing.");
+        i = 0; continue;   // re-evaluate current state (password field should now appear)
+      }
+      log("-> Audio auto-solver did not solve; falling back to human in VNC...");
       // webshare-style: poll for the grecaptcha token to confirm it's actually solved
       const captchaTimeout = Date.now() + 120000;
       let captchaResolved = false;
