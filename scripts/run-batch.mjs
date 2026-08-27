@@ -307,32 +307,49 @@ async function realClick(elExpr) {
 // Returns true if the grecaptcha token appears (captcha solved), else false (caller can waitHuman).
 async function solveAudioCaptcha(timeoutMs = 60000) {
   const t0 = Date.now();
-  // find reCAPTCHA frames (classic v2 AND enterprise)
-  async function findCaptchaFrame() {
-    for (const f of await send("Page.getFrameTree").then(r => r.result?.frameTree ? [r.result.frameTree] : []).catch(() => [])) {
-      // flatten frame tree
-      const walk = (n) => { let out = n.url ? [n] : []; (n.childFrames || []).forEach(c => out = out.concat(walk(c))); return out; };
-      const all = walk(f);
-      for (const fr of all) {
-        if ((fr.url || "").includes("recaptcha") && (/anchor/.test(fr.url) || /bframe/.test(fr.url))) return fr;
-      }
-    }
+  // Find reCAPTCHA frames (classic v2 AND enterprise) via CDP frame tree —
+  // cross-origin reCAPTCHA iframes BLOCK contentDocument, so we evaluate INSIDE the
+  // frame using Page.createIsolatedWorld (works across origins, no taint).
+  async function captchaFrame() {
+    const tree = (await send("Page.getFrameTree").catch(() => null))?.result?.frameTree;
+    const walk = (n) => { let out = n.url ? [n] : []; (n.childFrames || []).forEach(c => out = out.concat(walk(c))); return out; };
+    const all = tree ? walk(tree) : [];
+    return all.find(fr => (fr.url || "").includes("recaptcha") && (/anchor/.test(fr.url) || /bframe/.test(fr.url) || /imageframe/.test(fr.url))) || null;
+  }
+  // evaluate JS inside a specific frame (bypasses cross-origin restriction)
+  async function evalInFrame(frameId, expr) {
+    try {
+      const w = await send("Page.createIsolatedWorld", { frameId, grantUniveralAccess: false, worldName: "th-solver" });
+      const ctx = w.result?.executionContextId;
+      if (!ctx) return null;
+      const r = await send("Runtime.evaluate", { expression: expr, contextId: ctx, returnByValue: true, awaitPromise: true });
+      return r.result?.result?.value ?? null;
+    } catch { return null; }
+  }
+  // helper: run expr in the frame that currently has the audio/challenge content
+  const runInCaptchaFrame = async (expr) => {
+    const fr = await captchaFrame();
+    if (!fr) return null;
+    return await evalInFrame(fr.id, expr);
+  };
+  // 1. switch challenge to audio: find the [title~=audio] control inside ANY recaptcha frame
+  const audioClick = await runInCaptchaFrame(`(() => {
+    const b = [...document.querySelectorAll('button,[role=button]')].find(x => /audio/i.test((x.title||'')+' '+(x.getAttribute('aria-label')||'')+' '+(x.className||'')));
+    if (b) { b.click(); return 'clicked'; }
     return null;
-  }
-  // audio element is inside the challenge; use main-frame JS to click by title/aria (post-iframe)
-  const clicked = await evalJs(`(() => {
-    const nodes = [...document.querySelectorAll('iframe')];
-    for (const n of nodes) { try { const d = n.contentDocument; if(!d) continue; const b = [...d.querySelectorAll('button,[role=button]')].find(x => /audio/i.test((x.title||'')+' '+(x.getAttribute('aria-label')||''))); if (b) { b.click(); return 'clicked-js'; } } catch(e){} }
-    return null; })()`).catch(() => null);
-  if (clicked === "clicked-js") {
-    log("-> Audio auto-solve: clicked audio switch (JS).");
-    await sleep(2500);
-  }
-  // get audio src
-  const src = await evalJs(`(() => {
-    for (const n of document.querySelectorAll('iframe')) { try { const d = n.contentDocument; if(!d) continue; const a = d.getElementById('audio-source'); if (a && a.src) return a.src; const au = d.querySelector('audio'); if(au && au.currentSrc) return au.currentSrc; const s = d.querySelector('audio source'); if(s && s.src) return s.src; } catch(e){} }
-    return ''; })()`).catch(() => "");
+  })()`);
+  if (audioClick === "clicked") { log("-> Audio auto-solve: audio switch clicked (in-frame, cross-origin safe)."); await sleep(2500); }
+  else log("-> Audio auto-solve: audio control not found in frame.");
+
+  // 2. extract the audio src from the challenge frame
+  const src = await runInCaptchaFrame(`(() => {
+    const a = document.getElementById('audio-source'); if (a && a.src) return a.src;
+    const au = document.querySelector('audio'); if (au) return au.currentSrc || au.src || '';
+    const s = document.querySelector('audio source'); if (s) return s.src || '';
+    return '';
+  })()`);
   if (!src) { log("-> Audio auto-solve: no audio source found."); return false; }
+  log("-> Audio auto-solve: got audio source.");
 
   // transcribe via sibling Python helper (proven pipeline)
   const { execFileSync } = await import("node:child_process");
@@ -347,13 +364,24 @@ async function solveAudioCaptcha(timeoutMs = 60000) {
   if (!answer) return false;
   log(`-> Audio auto-solve: heard "${answer}"`);
 
-  // type + verify (trusted), the field may be in any recaptcha frame
-  await evalJs(`(() => { for (const n of document.querySelectorAll('iframe')) { try { const d=n.contentDocument; if(!d) continue; const i=d.getElementById('audio-response'); if(i){ const s=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set; s.call(i, ${JSON.stringify(answer)}); i.dispatchEvent(new Event('input',{bubbles:true})); const v=d.getElementById('recaptcha-verify-button'); if(v) v.click(); return true; } } catch(e){} } return false; })()`).catch(() => false);
+  // type + verify inside the challenge frame (cross-origin safe)
+  await runInCaptchaFrame(`(() => {
+    const i = document.getElementById('audio-response');
+    if (!i) return false;
+    const s = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
+    s.call(i, ${JSON.stringify(answer)});
+    i.dispatchEvent(new Event('input',{bubbles:true}));
+    const v = document.getElementById('recaptcha-verify-button');
+    if (v) v.click();
+    return true;
+  })()`);
   // confirm token appeared
   const deadline = t0 + timeoutMs;
   while (Date.now() < deadline) {
     await sleep(3000);
-    const tok = await evalJs(`(() => { try { const g=window.grecaptcha; if(g&&g.getResponse&&g.getResponse()) return g.getResponse(); } catch(e){} return ''; })()`).catch(() => "");
+    // token may live in the anchor frame (cross-origin) OR the main page — check both
+    let tok = await evalJs(`(() => { try { const g=window.grecaptcha; if(g&&g.getResponse&&g.getResponse()) return g.getResponse(); } catch(e){} const inp=document.querySelector('textarea[name="g-recaptcha-response"]'); return inp?inp.value:''; })()`).catch(() => "");
+    if (!tok) tok = (await runInCaptchaFrame(`(() => { try { const g=window.grecaptcha; if(g&&g.getResponse&&g.getResponse()) return g.getResponse(); } catch(e){} return ''; })()`)) || "";
     if (tok) { log("-> Audio auto-solve: SOLVED (token obtained)."); return true; }
   }
   log("-> Audio auto-solve: submitted but no token — will fall back to human.");
@@ -413,6 +441,65 @@ mkdirSync(SS_DIR, { recursive: true });
 async function screenshot(email) {
   const file = join(SS_DIR, `fail-${email.replace(/[@.]/g,"_")}.png`);
   try { const s = await send("Page.captureScreenshot", { format: "png" }); writeFileSync(file, Buffer.from(s.result.data, "base64")); log("-> Screenshot saved: " + file); return true; } catch { return false; }
+}
+
+// ── QR-to-terminal: extract the Google QR image, downsample in-page via canvas,
+//    render as scannable unicode half-block ASCII in the terminal. ──
+// QR codes are images inside the sign-in challenge; canvas.getImageData works in
+// the SAME origin (accounts.google.com), so no cross-origin taint issue.
+// Returns the ASCII art string (or null if no QR found).
+async function renderQrToTerminal() {
+  // 1. locate the QR <img> (Google renders it as img[src*=chart.googleapis] or data: PNG)
+  const info = await evalJs(`(() => {
+    const imgs = [...document.querySelectorAll('img')].filter(i => {
+      const s = (i.src || '');
+      return /chart\.googleapis|data:image\/(png|jpeg)/.test(s) && (i.width > 50);
+    });
+    if (!imgs.length) return null;
+    const img = imgs[imgs.length - 1]; // newest = the current QR
+    return { src: img.src, w: img.naturalWidth || img.width, h: img.naturalHeight || img.height };
+  })()`).catch(() => null);
+  if (!info) { log("-> No QR image element found on page."); return null; }
+  log(`-> QR image found (${info.w}x${info.h}). Rendering to terminal...`);
+
+  // 2. draw it to a canvas at fixed grid (37x37 → half-block = 74 cols terminal),
+  //    sample luminance → binary matrix
+  const matrix = await evalJs(`(async () => {
+    const img = new Image();
+    img.src = ${JSON.stringify(info.src)};
+    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; });
+    const N = 37; // QR version-agnostic grid
+    const c = document.createElement('canvas'); c.width = N; c.height = N;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(img, 0, 0, N, N);
+    const d = ctx.getImageData(0, 0, N, N).data;
+    // threshold: QR modules are black/white; pick midpoint of extremes
+    let min = 255, max = 0;
+    for (let i = 0; i < d.length; i += 4) { const v = 0.3*d[i]+0.59*d[i+1]+0.11*d[i+2]; min = Math.min(min, v); max = Math.max(max, v); }
+    const mid = (min + max) / 2;
+    const rows = [];
+    for (let y = 0; y < N; y++) { let r = ''; for (let x = 0; x < N; x++) { r += (0.3*d[(y*N+x)*4]+0.59*d[(y*N+x)*4+1]+0.11*d[(y*N+x)*4+2]) < mid ? '1' : '0'; } rows.push(r); }
+    return rows;
+  })()`).catch(() => null);
+  if (!matrix) { log("-> Failed to decode QR pixels."); return null; }
+
+  // 3. render half-block ASCII: two vertical pixels per character (▀ top, ▄ bottom, █ both, ' ' none)
+  const N = matrix.length;
+  const lines = [];
+  for (let y = 0; y < N; y += 2) {
+    let line = "";
+    const top = matrix[y];
+    const bot = (y + 1 < N) ? matrix[y + 1] : "0".repeat(N);
+    for (let x = 0; x < N; x++) {
+      const a = top[x] === "1", b = bot[x] === "1";
+      line += a && b ? "█" : a ? "▀" : b ? "▄" : " ";
+    }
+    lines.push(line);
+  }
+  const art = lines.join("\n");
+  log("\n" + art + "\n", "info");
+  log("-> Scan the QR above with your phone to complete sign-in. (QR also saved as screenshot)", "arr");
+  return art;
 }
 // extract the tap-code (number) from challenge text
 function extractCode(text) {
@@ -607,6 +694,7 @@ async function loginOne(acc) {
         }
         if (/Verifikasi info|verify your info|phone verification|QR code|scan the QR/i.test(T)) {
           log("-> Manual phone/QR verification detected");
+          await renderQrToTerminal();   // print the QR as ASCII for phone scanning
           const ok = await waitHuman(email, "QR/phone verification", "gmail");
           if (ok) continue;
           markFailed(email, "manual-verify", pw, tok); return false;
