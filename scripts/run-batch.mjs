@@ -143,7 +143,7 @@ try { sh("ln -sf vnc.html /opt/noVNC/index.html"); } catch {}
 log("-> Setting up VNC and Chromium....");
 const NO_VNC_FLAG = process.argv.slice(2).includes("--no-vnc");
 if (!NO_VNC_FLAG) {
-  sh(`pkill -f "[X]vfb ${DISPLAY}" ; pkill -f "[r]emote-debugging-port=9222" ; pkill -f "[x]11vnc -display ${DISPLAY}" ; pkill -f "[w]ebsockify 6080" ; sleep 1`);
+  sh(`pkill -f "[X]vfb ${DISPLAY}" ; pkill -f "[r]emote-debugging-port=9222" ; pkill -f "[x]11vnc -display ${DISPLAY}" ; pkill -f "[w]ebsockify 6080" ; pkill -f "[c]hromium-browser --no-sandbox" ; sleep 1`);
 } else {
   log("-> --no-vnc: VNC/Xvfb disabled (headless Chrome only)");
 }
@@ -1078,7 +1078,7 @@ function cleanupList(singleShot) {
 }
 function clearVnc() {
   // [x]/[w] brackets stop pkill matching this script's own shell
-  try { sh("pkill -f '[x]11vnc -display :99' ; pkill -f '[w]ebsockify' ; pkill -f '[r]emote-debugging-port=9222' ; pkill -f '[X]vfb :99' ; true"); } catch {}
+  try { sh("pkill -f '[x]11vnc -display :99' ; pkill -f '[w]ebsockify' ; pkill -f '[r]emote-debugging-port=9222' ; pkill -f '[X]vfb :99' ; pkill -f '[c]hromium-browser --no-sandbox' ; true"); } catch {}
 }
 process.on("SIGINT", () => { log("-> Interrupted; clearing VNC stack...."); clearVnc(); process.exit(130); });
 process.on("SIGTERM", () => { clearVnc(); process.exit(143); });
