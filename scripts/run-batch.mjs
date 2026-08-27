@@ -675,6 +675,7 @@ async function loginOne(acc) {
     // set the poll loop's starting state so it doesn't loop on the stale password page
     const t0 = Date.now();
     let findingLogged = false, codeLogged = false, lastUnknown = null, lastUnknownAt = 0;
+    let humanWaits = 0;
     let actedOn = null, actedAt = 0;
     const acted = async (url) => { if (actedOn === url && Date.now() - actedAt < 25000) return true; actedOn = url; actedAt = Date.now(); await sleep(2000); return false; };
     // re-enter the same polling logic below by looping here
@@ -709,7 +710,18 @@ async function loginOne(acc) {
         if (lastUnknown === uk && Date.now() - lastUnknownAt > 60000) {
           log("-> Stuck on unknown screen >60s; waiting for human assistance...");
           const ok = await waitHuman(email, "unknown screen", "gmail");
-          if (ok) { lastUnknown = ""; lastUnknownAt = Date.now(); continue; }
+          if (ok) {
+            // waitHuman claims "reached Gmail", but if we're STILL on the same unknown
+            // page the next iteration, that success was a false positive (the account
+            // is bouncing back to a verification wall). Cap repeated human waits so a
+            // stuck account can't loop forever.
+            humanWaits++;
+            if (humanWaits >= 3) {
+              log("-> Unknown screen persists after 3 human waits — marking failed (no infinite loop).");
+              markFailed(email, "persistent-unknown", pw, tok); return false;
+            }
+            lastUnknown = ""; lastUnknownAt = Date.now(); continue;
+          }
           markFailed(email, "timeout (" + uk.slice(0, 30) + ")", pw, tok); return false;
         }
         if (lastUnknown !== uk) { lastUnknown = uk; lastUnknownAt = Date.now(); }
