@@ -449,11 +449,16 @@ async function checkMail(email) {
     }
     const full = (x.match(/<fullcount>(\d+)<\/fullcount>/) || [])[1] || "0";
     const seen = lastAtom.get(email);
-    if (seen !== undefined && +full > seen) {
-      // new mail since last poll — fetch & store immediately
-      console.log(`[gmail-inbox] NEW MAIL ${email} (${full} unread) — fetching...`);
+    // sync if: new unread count, OR first check, OR every 5th tick (periodic refresh)
+    const tick = (lastAtom.get("__tick_" + email) || 0) + 1;
+    lastAtom.set("__tick_" + email, tick);
+    const should_sync = seen === undefined || +full > seen || tick % 5 === 0;
+    if (should_sync) {
+      if (seen !== undefined && +full > seen) {
+        console.log(`[gmail-inbox] NEW MAIL ${email} (${full} unread) — fetching...`);
+        broadcast("new", { email, unread: +full, ts: Date.now() });
+      }
       syncAccount(email).catch(() => {});
-      broadcast("new", { email, unread: +full, ts: Date.now() });
     }
     lastAtom.set(email, +full);
   } catch (e) {
