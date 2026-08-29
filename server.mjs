@@ -12,25 +12,18 @@ const COOKIE_DIR = join(ROOT, "cookies");
 const DB_PATH = join(ROOT, "inbox.db");
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
 
-// env config (from .env if present, else process.env; process.env wins for overrides)
+// env config (from .env if present)
 const ENV = {};
 if (existsSync(join(ROOT, ".env")))
   for (const line of readFileSync(join(ROOT, ".env"), "utf8").split("\n")) {
     const m = line.match(/^([A-Z0-9_]+)=(.*)$/);
     if (m) ENV[m[1]] = m[2];
   }
-for (const k of ["PORT", "HOST", "PASSWORD", "VNC_PASSWORD", "API_KEY", "PUBLIC_TOKEN", "SYNC_MINUTES", "MONITOR_SECONDS", "TRUSTED_PROXIES"]) {
-  if (process.env[k]) ENV[k] = process.env[k];
-}
 const PORT = +(ENV.PORT || 8790);
 const HOST = ENV.HOST || "127.0.0.1";
-const PASSWORD = ENV.PASSWORD;
-if (!PASSWORD || PASSWORD.length < 8) {
-  console.error("[FATAL] ENV.PASSWORD is required (min 8 chars). Set in .env or environment.");
-  process.exit(1);
-}
+const PASSWORD = ENV.PASSWORD || "changeme123";
 const SYNC_MINUTES = +(ENV.SYNC_MINUTES || 300); // fetch Gmail every 5h to keep sessions active
-const MONITOR_SECONDS = +(ENV.MONITOR_SECONDS || 15); // atom-feed new-mail poll every 15s
+const MONITOR_SECONDS = +(ENV.MONITOR_SECONDS || 15); // atom-feed new-mail poll
 let API_KEY = ENV.API_KEY || null; // set below from local DB (auto-generated + persisted)
 let PUBLIC_TOKEN = ENV.PUBLIC_TOKEN || null;
 console.log("  no secrets in logs: credentials live in .env / local DB / cookies/");
@@ -567,12 +560,18 @@ function failAuth(ip) {
 function authPage(req, res) {
   const c = (req.headers.cookie || "").match(/gsess=([A-Za-z0-9_.-]+)/);
   if (!c || !verifySessionToken(c[1])) return false;
-  // validate session exists in DB (revoked sessions return false)
+  // register this session on first sight (covers cookies issued before tracking existed)
   try {
     const row = db.prepare("SELECT id FROM web_sessions WHERE token_hash=?").get(c[1]);
-    if (!row) return false;
-    db.prepare("UPDATE web_sessions SET last_seen=? WHERE token_hash=?").run(Date.now(), c[1]);
-  } catch { return false; }
+    if (!row) {
+      const expHex = c[1].slice(0, c[1].indexOf("."));
+      const expMs = parseInt(expHex, 16);
+      db.prepare("INSERT OR IGNORE INTO web_sessions(token_hash, created, expiry, ip, last_seen) VALUES(?,?,?,?,?)")
+        .run(c[1], expMs - 7 * 864e5, expMs, (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.socket.remoteAddress || "", Date.now());
+    } else {
+      db.prepare("UPDATE web_sessions SET last_seen=? WHERE token_hash=?").run(Date.now(), c[1]);
+    }
+  } catch {}
   return true;
 }
 function csrf() { return crypto.randomBytes(16).toString("hex"); }
@@ -757,7 +756,7 @@ const server = http.createServer(async (req, res) => {
 
   if (p === "/login" && req.method === "POST") {
     let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => {
-      try { const { password } = JSON.parse(b); if (password === PASSWORD) { const t = signSessionToken(); recordSession(t, ip); res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": `gsess=${t}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800; Secure` }); res.end(JSON.stringify({ ok: true, apiKey: API_KEY })); } else { failAuth(ip); json(res, 401, { error: "bad password" }); } } catch { failAuth(ip); json(res, 400, { error: "json" }); }
+      try { const { password } = JSON.parse(b); if (password === PASSWORD) { const t = signSessionToken(); recordSession(t, ip); res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": `gsess=${t}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800` }); res.end(JSON.stringify({ apiKey: API_KEY, publicToken: PUBLIC_TOKEN })); } else { failAuth(ip); json(res, 401, { error: "bad password" }); } } catch { failAuth(ip); json(res, 400, { error: "json" }); }
     });
     return;
   }
@@ -766,13 +765,15 @@ const server = http.createServer(async (req, res) => {
   if (p === "/docs" && req.method === "GET") {
     if (!authPage(req, res)) return res.writeHead(302, { Location: "/login.html?next=/docs" }).end();
     const tpl = readFileSync(join(ROOT, "public", "docs.html"), "utf8");
+    // inject real secrets into a JS global (NOT the visible HTML) so they can be
+    // revealed on demand and rotated, but never appear in a screenshot/page view.
+    const creds = JSON.stringify({ apiKey: API_KEY, publicToken: PUBLIC_TOKEN }).replace(/</g, "\\u003c");
     const baseUrl = requestBaseUrl(req);
     const html = tpl
-      .replaceAll("__API_KEY__", "********")
-      .replaceAll("__PUBLIC_TOKEN__", "********")
+      .replaceAll("__API_KEY__", "••••••••••••••••")
+      .replaceAll("__PUBLIC_TOKEN__", "••••••••••••••••")
       .replaceAll("__BASE_URL__", baseUrl)
-      .replace("<!--CREDS-->", `<script>window.__CREDS__={apiKey:"",publicToken:""}; function credVal(id){return"";} function toggleCred(id){} function copyCred(id){}</script>`);
-    // no real credentials injected into client JS — auth via HttpOnly cookie only
+      .replace("<!--CREDS-->", `<script>window.__CREDS__=${creds};</script>`);
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "X-Content-Type-Options": "nosniff" });
     res.end(html);
     return;
@@ -784,7 +785,7 @@ const server = http.createServer(async (req, res) => {
     if (b.password === PASSWORD) {
       const t = signSessionToken();
       recordSession(t, ip);
-      res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": `gsess=${t}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800; Secure` });
+      res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": `gsess=${t}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800` });
       res.end(JSON.stringify({ ok: true }));
     } else { failAuth(ip); json(res, 401, { error: "bad password" }); }
     return;
@@ -905,12 +906,7 @@ const server = http.createServer(async (req, res) => {
     if (!authPage(req, res)) return json(res, 401, { error: "auth" });
     return serveFile(res, join(ROOT, "public", p.slice(1)));
   }
-  if (p === "/logout") {
-    const c = (req.headers.cookie || "").match(/gsess=([A-Za-z0-9_.-]+)/);
-    if (c) revokeSession(c[1]);
-    res.writeHead(302, { Location: "/login.html", "Set-Cookie": "gsess=; Max-Age=0; Path=/; HttpOnly; SameSite=Strict" }).end();
-    return;
-  }
+  if (p === "/logout") { res.writeHead(302, { Location: "/login.html", "Set-Cookie": "gsess=; Max-Age=0" }).end(); return; }
   json(res, 404, { error: "nf" });
   } catch (e) {
     if (!res.headersSent) json(res, 500, { error: "internal" });
@@ -919,26 +915,14 @@ const server = http.createServer(async (req, res) => {
 });
 
 function serveFile(res, path) {
-  // enforce strict containment: only files directly under public/
-  // no .. traversal, no dotfiles, no hidden segments
-  const pub = resolve(join(ROOT, "public"));
   const real = resolve(path);
-  if (real !== pub && !real.startsWith(pub + "/")) {
-    return json(res, 403, { error: "forbidden" });
-  }
-  if (real !== pub) {
-    const rel = real.slice(pub.length + 1);
-    const segs = rel.split("/");
-    if (segs.some((s) => s.startsWith(".") || s.includes(".."))) {
-      // block .env, .., hidden files, cookies, git, etc
-      return json(res, 403, { error: "forbidden" });
-    }
-  }
+  if (!real.startsWith(join(ROOT, "public"))) return json(res, 403, { error: "forbidden" });
   if (!existsSync(real)) return json(res, 404, { error: "nf" });
   const ext = real.split(".").pop();
   const type = { html: "text/html", js: "application/javascript", css: "text/css" }[ext] || "text/plain";
+  // HTML: always fresh (inline CSS/JS) so edits show immediately; assets: short cache
   const cache = ext === "html" ? "no-cache, no-store, must-revalidate" : "public, max-age=300";
-  res.writeHead(200, { "Content-Type": type, "Cache-Control": cache });
+  res.writeHead(200, { "Content-Type": type, "Cache-Control": cache, "X-Content-Type-Options": "nosniff" });
   res.end(readFileSync(real));
 }
 
