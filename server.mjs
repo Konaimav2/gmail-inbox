@@ -23,7 +23,7 @@ const PORT = +(ENV.PORT || 8790);
 const HOST = ENV.HOST || "127.0.0.1";
 const PASSWORD = ENV.PASSWORD || "changeme123";
 const SYNC_MINUTES = +(ENV.SYNC_MINUTES || 300); // fetch Gmail every 5h to keep sessions active
-const MONITOR_SECONDS = +(ENV.MONITOR_SECONDS || 15); // atom-feed new-mail poll
+const MONITOR_SECONDS = +(ENV.MONITOR_SECONDS || 30); // atom-feed new-mail poll
 let API_KEY = ENV.API_KEY || null; // set below from local DB (auto-generated + persisted)
 let PUBLIC_TOKEN = ENV.PUBLIC_TOKEN || null;
 console.log("  no secrets in logs: credentials live in .env / local DB / cookies/");
@@ -448,19 +448,8 @@ async function checkMail(email) {
       return;
     }
     const full = (x.match(/<fullcount>(\d+)<\/fullcount>/) || [])[1] || "0";
-    const seen = lastAtom.get(email);
-    // sync if: new unread count, OR first check, OR every 5th tick (periodic refresh)
-    const tick = (lastAtom.get("__tick_" + email) || 0) + 1;
-    lastAtom.set("__tick_" + email, tick);
-    const should_sync = seen === undefined || +full > seen || tick % 5 === 0;
-    if (should_sync) {
-      if (seen !== undefined && +full > seen) {
-        console.log(`[gmail-inbox] NEW MAIL ${email} (${full} unread) — fetching...`);
-        broadcast("new", { email, unread: +full, ts: Date.now() });
-      }
-      syncAccount(email).catch(() => {});
-    }
-    lastAtom.set(email, +full);
+    // always sync — unread count unreliable (emails get marked as read)
+    syncAccount(email).catch(() => {});
   } catch (e) {
     // log error and trigger re-sync on failure (stale cookies, network error, etc.)
     console.log(`[gmail-inbox] atom ${email} error: ${e.message || e} — re-syncing...`);
