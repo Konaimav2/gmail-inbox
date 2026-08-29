@@ -30,7 +30,7 @@ if (!PASSWORD || PASSWORD.length < 8) {
   process.exit(1);
 }
 const SYNC_MINUTES = +(ENV.SYNC_MINUTES || 300); // fetch Gmail every 5h to keep sessions active
-const MONITOR_SECONDS = +(ENV.MONITOR_SECONDS || 120); // atom-feed new-mail poll
+const MONITOR_SECONDS = +(ENV.MONITOR_SECONDS || 15); // atom-feed new-mail poll every 15s
 let API_KEY = ENV.API_KEY || null; // set below from local DB (auto-generated + persisted)
 let PUBLIC_TOKEN = ENV.PUBLIC_TOKEN || null;
 console.log("  no secrets in logs: credentials live in .env / local DB / cookies/");
