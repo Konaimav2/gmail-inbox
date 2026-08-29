@@ -439,7 +439,14 @@ async function checkMail(email) {
   try {
     const cookies = JSON.parse(readFileSync(join(COOKIE_DIR, acct.cookie_file), "utf8"));
     const { status, body: x } = await fetchWithJar(cookies, "https://mail.google.com/mail/u/0/feed/atom");
-    if (status !== 200) return;
+    if (status !== 200) {
+      // stale session or rate limit — log and trigger full re-sync
+      console.log(`[gmail-inbox] atom ${email}: HTTP ${status} — re-syncing...`);
+      ACCOUNT_SYNC.run(Date.now(), "http " + status, email);
+      syncAccount(email).catch(() => {});
+      lastAtom.delete(email);  // reset so next poll re-checks
+      return;
+    }
     const full = (x.match(/<fullcount>(\d+)<\/fullcount>/) || [])[1] || "0";
     const seen = lastAtom.get(email);
     if (seen !== undefined && +full > seen) {
@@ -449,7 +456,13 @@ async function checkMail(email) {
       broadcast("new", { email, unread: +full, ts: Date.now() });
     }
     lastAtom.set(email, +full);
-  } catch {}
+  } catch (e) {
+    // log error and trigger re-sync on failure (stale cookies, network error, etc.)
+    console.log(`[gmail-inbox] atom ${email} error: ${e.message || e} — re-syncing...`);
+    ACCOUNT_SYNC.run(Date.now(), "error: " + (e.message || String(e)).slice(0, 80), email);
+    syncAccount(email).catch(() => {});
+    lastAtom.delete(email);
+  }
 }
 async function monitorLoop() {
   // realtime new-mail check ONLY for the currently selected account
