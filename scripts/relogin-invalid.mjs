@@ -34,7 +34,7 @@ try {
 
 let queued = [], missing = [], skipped = [];
 for (const f of invalid) {
-  const line = credBySlug.get(f);
+  const line = credBySlug.get(f) || credBySlug.get(f.toLowerCase());
   if (!line) { missing.push(f.replace(/\.json$/, "")); continue; }
   const email = line.slice(0, line.indexOf("|")).trim().toLowerCase();
   if (listed.has(email)) { skipped.push(email); continue; }

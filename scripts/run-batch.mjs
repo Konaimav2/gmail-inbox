@@ -237,9 +237,11 @@ function preflight() {
   // 2. shared memory / sandbox: Chrome in containers often needs /dev/shm or --no-sandbox
   const shm = sh("df -k /dev/shm 2>/dev/null | awk 'NR==2{print $4}'");
   if (shm && +shm < 1024 * 64) problems.push("low /dev/shm (" + shm + "KB) — Chrome may crash; mount shm or pass --disable-dev-shm-usage");
-  // 3. memory: VNC+Chrome+Xvfb need ~1.5GB free
+  // 3. memory: VNC+Chrome+Xvfb want ~1GB free (override via BATCH_MIN_RAM_MB;
+  // swap-backed boxes can safely go lower — Chrome is the only big consumer)
+  const minRamKB = Math.max(256 * 1024, parseInt(process.env.BATCH_MIN_RAM_MB || "", 10) * 1024 || 1024 * 1024);
   const memKB = sh("free -k | awk 'NR==2{print $7}'"); // available
-  if (memKB && +memKB < 1024 * 1024) problems.push("low free RAM (" + Math.round(memKB / 1024) + "MB) — need ~1GB+");
+  if (memKB && +memKB < minRamKB) problems.push("low free RAM (" + Math.round(memKB / 1024) + "MB) — need ~" + Math.round(minRamKB / 1024) + "MB+ (or set BATCH_MIN_RAM_MB)");
   // 4. CPU virt flags: not required (software GL works) but warn if machine likely can't handle it
   const cpu = sh("grep -c '^flags' /proc/cpuinfo");
   // 5. writable profile dir
