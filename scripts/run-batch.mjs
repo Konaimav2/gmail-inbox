@@ -790,14 +790,22 @@ async function loginOne(acc) {
   // if account chooser is open, jump to "Use another account"
   const chooser = await evalJs(`(() => { const t=document.body.innerText||''; return /Use another account/i.test(t) ? true : false; })()`).catch(() => false);
   if (chooser) { await clickText("Use another account"); await sleep(2000); }
+  // chooser resume: our signed-out account tile may already be listed (cookie relogin
+  // lands here). Clicking it jumps straight to the password screen — same as a
+  // returning user, no identifier typing needed.
+  let resumed = false;
+  try {
+    resumed = await realClick(`[...document.querySelectorAll('button,[role=button],a,li,div')].find(x=>(x.children||[]).length<=3 && (x.innerText||'').toLowerCase().includes(${JSON.stringify(email.toLowerCase())}) && /sign\\s*out/i.test(x.innerText||''))`);
+    if (resumed) { log("-> Account tile found — resuming session (skipping email entry)...."); await sleep(2500); }
+  } catch { resumed = false; }
   // email
-  for (let i = 0; i < 24; i++) { const s = await state(); if (s.inputs.some((x) => x.includes("email") || x.includes("identifier"))) break; await sleep(500); }
-  const s1 = await state();
-  const emailSel = 'input[name=identifier], #identifierId, input[type=email]';
-  // verify the field has our email; type only if missing
-  const cur = await evalJs(`(() => { const el=document.querySelector('input[name=identifier], #identifierId, input[type=email]'); return el?el.value:''; })()`).catch(() => "");
-  if (cur !== email) { await typeChars('input[name=identifier], #identifierId, input[type=email]', email); }
-  await clickNext();
+  for (let i = 0; i < 24 && !resumed; i++) { const s = await state(); if (s.inputs.some((x) => x.includes("email") || x.includes("identifier"))) break; await sleep(500); }
+  // (resume skips straight to the password wait below)
+  if (!resumed) {
+    const cur = await evalJs(`(() => { const el=document.querySelector('input[name=identifier], #identifierId, input[type=email]'); return el?el.value:''; })()`).catch(() => "");
+    if (cur !== email) { await typeChars('input[name=identifier], #identifierId, input[type=email]', email); }
+    await clickNext();
+  }
   // wait for password field, detect invalid email or captcha
   let pwField = false;
   for (let i = 0; i < 30; i++) {

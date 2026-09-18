@@ -123,8 +123,18 @@ async function reloginOne(file, fromInvalid) {
     const s = await send("Page.captureScreenshot", { format: "png" });
     if (s?.result?.data) { writeFileSync(shot, Buffer.from(s.result.data, "base64"), { mode: 0o600 }); log(`-> ${file}: wall (screenshot ${shot})`); }
   } catch {}
+  // not inbox — classify the wall from page text (learned from screenshots) so the
+  // report names the recovery path instead of a generic "wall":
+  //   A: chooser + "Signed out" -> click tile + password resumes (run-batch does this)
+  //   B: marketing landing       -> full login from scratch
+  //   C: insecure-browser wall   -> browser rejected, headed+VNC only
+  const T = (await evalJs("document.body.innerText") || "").slice(0, 2000);
+  let wall = "wall";
+  if (/Choose an account/i.test(T) && /Signed out/i.test(T)) wall = "signed-out (resume: click tile + password)";
+  else if (/Create an account/i.test(T) && /AI-powered email|Secure, smart/i.test(T)) wall = "logged-out landing (full login needed)";
+  else if (/may not be secure|Couldn't sign you in/i.test(T)) wall = "insecure-browser (headed VNC only)";
   const title = (await evalJs("document.title")) || "";
-  log(`-> ${file}: NO inbox (${(title || url).slice(0, 70)}) — needs credential login`);
+  log(`-> ${file}: NO inbox [${wall}] ${(title || url).slice(0, 50)} — needs credential login`);
   if (!fromInvalid) {
     try { mkdirSync(BAD, { recursive: true, mode: 0o700 }); renameSync(join(DIR, file), join(BAD, file)); log(`-> ${file}: quarantined`); } catch {}
   }
