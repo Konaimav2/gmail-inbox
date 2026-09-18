@@ -15,7 +15,7 @@ for (const _k of ["log", "error", "warn"]) { const _f = console[_k].bind(console
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DIR = join(ROOT, "cookies");
 const BAD = join(DIR, "invalid");
-const FILTER = (process.argv[2] || "").toLowerCase();
+const FILTER = (process.argv.slice(2).find((a) => !a.startsWith("--")) || "").toLowerCase();
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -45,8 +45,8 @@ async function fetchWithJar(cookies, url) {
   return { status: 599, body: "", jar };
 }
 
-async function reverify(file) {
-  const path = join(DIR, file);
+async function reverify(file, dir = DIR) {
+  const path = join(dir, file);
   const cookies = JSON.parse(readFileSync(path, "utf8"));
   const hasSession = cookies.some((c) => ["SID", "SSID", "__Secure-1PSID"].includes(c.name) && c.value.length > 20);
   if (!hasSession) return { ok: false, why: "no session cookie", rotated: 0 };
@@ -84,20 +84,29 @@ async function reverify(file) {
 }
 
 let ok = 0, refreshed = 0, bad = 0;
-for (const f of readdirSync(DIR).filter((x) => x.endsWith(".json") && x !== "invalid")) {
+const HEAL = process.argv.includes("--heal");
+const SCAN = HEAL ? BAD : DIR;
+if (HEAL) console.log("(heal mode: validating cookies/invalid/, restoring the valid ones)");
+for (const f of readdirSync(SCAN).filter((x) => x.endsWith(".json") && x !== "invalid")) {
   if (FILTER && !f.toLowerCase().includes(FILTER)) continue;
   let r;
-  try { r = await reverify(f); }
+  try { r = await reverify(f, SCAN); }
   catch (e) { r = { ok: false, why: String(e.message || e).slice(0, 80), rotated: 0 }; }
   if (r.ok) {
     ok++; refreshed += r.rotated;
-    console.log(`OK    ${f}${r.rotated ? ` (refreshed ${r.rotated} cookies)` : ""}${r.note ? ` [${r.note}]` : ""}`);
+    if (HEAL) {
+      try { renameSync(join(BAD, f), join(DIR, f)); console.log(`BACK   ${f} (valid again — restored)`); }
+      catch (e) { console.log(`FAIL  ${f}  (restore error ${e.message})`); }
+    } else console.log(`OK    ${f}${r.rotated ? ` (refreshed ${r.rotated} cookies)` : ""}${r.note ? ` [${r.note}]` : ""}`);
   } else {
     bad++;
-    try { renameSync(join(DIR, f), join(BAD, f)); console.log(`MOVE  ${f}  (${r.why}) -> cookies/invalid/`); }
-    catch (e) { console.log(`FAIL  ${f}  (${r.why}; move error ${e.message})`); }
+    if (HEAL) console.log(`STILL-DEAD  ${f}  (${r.why})`);
+    else {
+      try { renameSync(join(DIR, f), join(BAD, f)); console.log(`MOVE  ${f}  (${r.why}) -> cookies/invalid/`); }
+      catch (e) { console.log(`FAIL  ${f}  (${r.why}; move error ${e.message})`); }
+    }
   }
-  await sleep(800); // gentle pacing between accounts
+  await sleep(HEAL ? 2000 : 800); // heal paces slower — verdicts must be trustworthy
 }
 console.log(`\nChecked: ${ok} valid (${refreshed} rotated), ${bad} invalid/moved.`);
 process.exit(bad ? 1 : 0);

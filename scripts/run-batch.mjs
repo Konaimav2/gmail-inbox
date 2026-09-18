@@ -150,14 +150,16 @@ async function fetchWithJar(cookies, url) {
   return { status: 599, body: "" };
 }
 // true session check: simls payload present = actually signed in
-async function cookieValid(email) {
+async function cookieValidPath(f) {
   try {
-    const f = join(COOKIE_DIR, email.replace(/[@.]/g, "_") + ".json");
     if (!existsSync(f)) return false;
     const cookies = JSON.parse(readFileSync(f, "utf8"));
     const { status, body } = await fetchWithJar(cookies, "https://mail.google.com/mail/u/0/h/?v=m&s=q&q=newer_than%3A30d");
     return status === 200 && /\"simls\",null,\"/.test(body);
   } catch { return false; }
+}
+async function cookieValid(email) {
+  return cookieValidPath(join(COOKIE_DIR, email.replace(/[@.]/g, "_") + ".json"));
 }
 async function reconcileFailed() {
   try {
@@ -1243,6 +1245,16 @@ async function ensureBrowser(wantedProxy) {
 
 async function isDone(acc) {
   const cfile = join(COOKIE_DIR, acc.email.replace(/[@.]/g, "_") + ".json");
+  // self-heal: main file gone but a quarantined copy validates (false quarantine)?
+  // Validate the copy IN PLACE — restore only on a VALID verdict, never on failure.
+  try {
+    const bad = join(COOKIE_DIR, "invalid", acc.email.replace(/[@.]/g, "_") + ".json");
+    if (!existsSync(cfile) && existsSync(bad) && await cookieValidPath(bad)) {
+      renameSync(bad, cfile);
+      log(`-> Healed ${acc.email} (false quarantine) — skipping login.`);
+      return true;
+    }
+  } catch {}
   if (existsSync(cfile)) {
     // fresh cookie files were verified moments ago (this or a parallel run) —
     // trust them without re-probing (a throttled probe false-negatives and would
