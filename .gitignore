@@ -1,43 +1,39 @@
-# Secrets — never commit
+# secrets — never commit
 .env
-.env.*
-!.env.example
 .public-token
+.inbox.db-secrets
+.vnc/
+.chrome-profile/
 .session-secret
-.2fa-secrets
-inbox.db-secrets
-*credentials*
-*secrets*
 
-# Runtime data
-list.txt
-loggedmail.txt
-failed.txt
-accounts.txt
-inbox.db
-inbox.db-wal
-inbox.db-shm
-inbox.db-secrets
-*.db
-*.db-*
-*.sqlite*
-*-wal
-*-shm
-
-# Browser profiles
-.chrome-profile*/
-.chrome-profile-*/
-.chrome-profile*
+# credentials + mail data — plaintext passwords & Google session cookies
 cookies/
-storage-state*.json
+cookies/invalid/
+*.db
+*.bak
+list.txt
+list.txt*
+!list.txt.example
+loggedmail.txt
+loggedmail.txt*
+failed.txt
+failed.txt*
+accounts.txt
+.batch-out.txt
+.impeccable/
 
-# Screenshots / logs
-screenshots/
-logs/
+# logs
 *.log
+logs/
 
-# Backups
+# deps / misc
+node_modules/
+.DS_Store
+*.swp
+.2fa-secrets
+proxy.txt
+screenshots/
 _backup_files/
 
-# Node
-node_modules/
+# agent handover (local only)
+HANDOVER.md

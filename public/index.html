@@ -2,9 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Mail Hub</title>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" onerror="document.documentElement.classList.add('no-fa')">
 
 <style>
 :root{
@@ -58,6 +58,7 @@ button:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid var(
 .dd.open .ddpanel{display:block}
 .dditem{display:flex;align-items:center;gap:10px;padding:11px 10px;border-radius:8px;cursor:pointer;font-size:13px;transition:background var(--t)}
 .dditem:hover{background:var(--bg3)}
+.dditem:focus-visible{outline:2px solid var(--acc);outline-offset:-1px;background:var(--bg3)}
 .dditem.active{background:#1a2a4a}
 .dditem .dot{width:8px;height:8px;border-radius:50%;background:var(--dim);flex:none}
 .dditem .dot.on{background:var(--ok);box-shadow:0 0 6px var(--ok)}
@@ -113,6 +114,12 @@ a{color:var(--acc2)}
 ::-webkit-scrollbar{width:9px;height:9px}
 ::-webkit-scrollbar-thumb{background:var(--line2);border-radius:99px}
 ::-webkit-scrollbar-thumb:hover{background:#3a4356}
+::selection{background:#2d63e0;color:#fff}
+.ts,.msg .meta span:last-child,.panehead-n,.sess-item .ex{font-variant-numeric:tabular-nums}
+.detailpane.open{animation:din .22s ease-out}
+@keyframes din{from{opacity:0;transform:translateX(10px)}}
+.home .mark{width:52px;height:52px;border-radius:15px;background:linear-gradient(135deg,#2d63e0,#7a5cff);display:inline-flex;align-items:center;justify-content:center;color:#fff;font-size:22px;box-shadow:0 8px 22px #2d63e044;margin-bottom:14px}
+.home .kbd{display:inline-block;background:var(--bg3);border:1px solid var(--line2);border-bottom-width:2px;border-radius:6px;padding:1px 7px;font-size:11px;font-family:var(--mono);color:var(--txt)}
 @media(max-width:820px){
   .layout{flex-direction:column;height:calc(100dvh - 145px);overflow:hidden}
   .listpane{width:100%;max-height:none;height:auto;flex:1 1 auto;min-height:0;overflow-y:auto}
@@ -143,21 +150,20 @@ a{color:var(--acc2)}
 <body>
 <header>
   <div class="brand">
-    <div class="mark"><i class="fa-solid fa-envelope-open-text"></i></div>
+    <div class="mark"><i class="fa-solid fa-envelope-open-text" aria-hidden="true"></i></div>
     <h1>Mail<span class="dot">Hub</span></h1>
     <span class="tag" title="realtime inbox · choose your gmail">tempmail-style · choose your gmail</span>
-    <span class="tag" style="color:var(--acc);font-weight:700">v9</span>
   </div>
   <div class="hdr-actions">
     <span id="credchips"></span>
-    <a href="/docs"><i class="fa-solid fa-book"></i> docs</a>
-    <button onclick="openSessions()" title="manage sessions"><i class="fa-solid fa-shield-halved"></i> sessions</button>
-    <a href="/logout" title="log out"><i class="fa-solid fa-arrow-right-from-bracket"></i> logout</a>
+    <a href="/docs" aria-label="docs"><i class="fa-solid fa-book" aria-hidden="true"></i> docs</a>
+    <button onclick="openSessions()" title="manage sessions" aria-label="manage sessions"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i> sessions</button>
+    <a href="/logout" title="log out" aria-label="log out"><i class="fa-solid fa-arrow-right-from-bracket" aria-hidden="true"></i> logout</a>
   </div>
 </header>
-<div class="modal" id="sessmodal" onclick="if(event.target===this)closeSessions()">
+<div class="modal" id="sessmodal" role="dialog" aria-modal="true" aria-labelledby="sessTitle" onclick="if(event.target===this)closeSessions()">
   <div class="modal-box">
-    <div class="modal-head"><b>Sessions</b><button onclick="closeSessions()">&times;</button></div>
+    <div class="modal-head"><b id="sessTitle">Sessions</b><button onclick="closeSessions()" aria-label="close sessions">&times;</button></div>
     <div class="modal-body" id="sessbody"></div>
   </div>
 </div>
@@ -165,10 +171,10 @@ a{color:var(--acc2)}
   <span class="badge" id="state">connecting…</span>
   <span class="addr" id="address" title="click to copy email" onclick="copyAddr()">—</span>
   <div class="dd" id="dd">
-    <button class="ddbtn" id="ddbtn" onclick="toggleDD(event)"><span id="ddcur">choose account</span><span class="carat">▼</span></button>
-    <div class="ddpanel" id="ddpanel" role="listbox"></div>
+    <button class="ddbtn" id="ddbtn" onclick="toggleDD(event)" aria-haspopup="listbox" aria-expanded="false" aria-controls="ddpanel" aria-label="choose account"><span id="ddcur">choose account</span><span class="carat" aria-hidden="true">▼</span></button>
+    <div class="ddpanel" id="ddpanel" role="listbox" aria-labelledby="ddbtn" tabindex="-1"></div>
   </div>
-  <button class="btn" id="refreshbtn" onclick="refresh()"><i class="fa-solid fa-rotate-right"></i> refresh</button>
+  <button class="btn" id="refreshbtn" onclick="refresh()" aria-label="refresh"><i class="fa-solid fa-rotate-right" aria-hidden="true"></i> refresh</button>
   <span class="muted" id="hacc" style="flex:1;text-align:right"></span>
 </div>
 <div class="layout">
@@ -176,10 +182,10 @@ a{color:var(--acc2)}
     <div class="panehead"><span class="panehead-t">Inbox</span><span class="panehead-n" id="thcount">0</span></div>
     <div id="list"></div>
   </div>
-  <div class="home" id="home"><div><h2>Select a message to read</h2><p>Tap any thread to open it here. Bodies render sandboxed (no scripts, safer views).</p></div></div>
+  <div class="home" id="home"><div><div class="mark"><i class="fa-solid fa-envelope-open-text" aria-hidden="true"></i></div><h2>Select a message to read</h2><p>Pick a thread on the left — or press <span class="kbd">Enter</span> on it. <span class="kbd">Esc</span> goes back. Bodies render sandboxed (no scripts, safer views).</p></div></div>
   <div class="detailpane" id="detail">
-    <div class="detailbar"><button onclick="closeDetail()"><i class="fa-solid fa-arrow-left"></i> back</button><span class="subj" id="dsubj"></span></div>
-    <iframe id="dbody" sandbox="allow-same-origin" title="message body"></iframe>
+    <div class="detailbar"><button onclick="closeDetail()"><i class="fa-solid fa-arrow-left" aria-hidden="true"></i> back</button><span class="subj" id="dsubj"></span></div>
+    <iframe id="dbody" sandbox="" referrerpolicy="no-referrer" title="message body"></iframe>
   </div>
 </div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -193,7 +199,7 @@ async function loadAccounts(opts={}){
   if(!accs.some(a=>a.email===current)) current=null;
   renderDD();
   if(!current&&accs.length) current=accs[0].email;
-  if(current) openAcc(current,{silent:true}); else { $('state').className='badge err'; $('state').textContent='no accounts'; $('address').textContent='add via scripts/run-batch.mjs'; $('ddcur').textContent='no accounts'; $('home').style.display='flex'; $('detail').classList.remove('open'); }
+  if(current) await openAcc(current,{silent:true}); else { $('state').className='badge err'; $('state').textContent='no accounts'; $('address').textContent='add via scripts/run-batch.mjs'; $('ddcur').textContent='no accounts'; $('home').style.display='flex'; $('detail').classList.remove('open'); }
 }
 function sessionInfo(a){
   if(!a.session_expiry) return '';
@@ -201,11 +207,11 @@ function sessionInfo(a){
   const days = Math.floor(left / 864e5);
   const label = left <= 0 ? 'expired' : (days >= 1 ? `${days}d` : `${Math.max(1,Math.round(left/36e5))}h`);
   const cls = left <= 0 ? 'se-exp' : left < 7*864e5 ? 'se-warn' : 'se-ok';
-  return `<span class="se ${cls}" title="session expires ${new Date(a.session_expiry).toLocaleString()}"><i class="fa-solid fa-clock"></i> ${label}</span>`;
+  return `<span class="se ${cls}" title="session expires ${new Date(a.session_expiry).toLocaleString()}"><i class="fa-solid fa-clock" aria-hidden="true"></i> ${label}</span>`;
 }
 function renderDD(){
   const p=$('ddpanel');
-  p.innerHTML=accs.map(a=>`<div class="dditem ${a.email===current?'active':''}" role="option" onclick="openAcc('${esc(a.email)}');closeDD()">
+  p.innerHTML=accs.map(a=>`<div class="dditem ${a.email===current?'active':''}" role="option" tabindex="0" aria-selected="${a.email===current?'true':'false'}" onclick="openAcc('${esc(a.email)}');closeDD()" onkeydown="ddKey(event,'${esc(a.email)}')">
     <span class="dot ${a.last_error?'err':'on'}"></span>
     <span class="em"><span class="eml">${esc(a.email)}</span>${sessionInfo(a)}</span>
     <span class="ts">${a.last_sync?new Date(a.last_sync).toLocaleTimeString():''}</span>
@@ -213,10 +219,19 @@ function renderDD(){
   $('ddcur').textContent=current||'choose account';
   $('address').textContent=current||'—';
 }
+let sessOpener=null;
 async function openSessions(){
   const b=$('sessbody');
+  sessOpener=document.activeElement;
+  b.innerHTML='<div class="sess-item">loading…</div>';
+  $('sessmodal').classList.add('open');
+  const closeBtn=$('sessmodal').querySelector('.modal-head button');
+  if(closeBtn) closeBtn.focus();
   try {
-    const list=await j('/api/sessions');
+    const r=await fetch('/api/sessions');
+    if(r.status===401){ location.href='/login.html'; return; }
+    if(!r.ok) throw 0;
+    const list=await r.json();
     b.innerHTML=list.map(s=>{
       const exp=s.expiry?new Date(s.expiry).toLocaleString():'?';
       const left=s.expiry?s.expiry-Date.now():0;
@@ -225,26 +240,31 @@ async function openSessions(){
       const loc=s.ip||'?';
       const created=s.created?new Date(s.created).toLocaleString():'?';
       return `<div class="sess-item" style="flex-wrap:wrap;gap:4px">
-        <span class="em" style="${isCurrent?'color:var(--acc2);font-weight:600':''}">${isCurrent?'<i class="fa-solid fa-check-circle"></i> ':''}${loc}${isCurrent?' (you)':''}</span>
+        <span class="em" style="${isCurrent?'color:var(--acc2);font-weight:600':''}">${isCurrent?'<i class="fa-solid fa-check-circle" aria-hidden="true"></i> ':''}${loc}${isCurrent?' (you)':''}</span>
         <span class="ex ${left<=0?'exp':(left<864e5?'warn':'')}">exp ${exp} (${lbl})</span>
         <span class="ex" style="width:100%;font-size:10px">logged in ${created}</span>
-        ${!isCurrent?`<button onclick="revokeSession(${s.id})" style="background:var(--bg3);border:1px solid var(--line2);color:var(--txt);border-radius:8px;padding:4px 10px;font-size:11px;cursor:pointer">revoke</button>`:''}
+        ${!isCurrent?`<button onclick="revokeSession(${s.id},this)" style="background:var(--bg3);border:1px solid var(--line2);color:var(--txt);border-radius:8px;padding:4px 10px;font-size:11px;cursor:pointer">revoke</button>`:''}
       </div>`;
     }).join('')||'<div class="sess-item">no sessions</div>';
     // add manual login instructions at the bottom
     b.innerHTML+=`<div class="sess-item" style="border-top:1px solid var(--line2);margin-top:8px"><span class="ex">Log in on another device with the same password.</span></div>`;
   } catch { b.innerHTML='<div class="sess-item">could not read sessions</div>'; }
-  $('sessmodal').classList.add('open');
 }
-function closeSessions(){ $('sessmodal').classList.remove('open'); }
-function revokeSession(id){
+function closeSessions(){ $('sessmodal').classList.remove('open'); if(sessOpener&&sessOpener.focus) sessOpener.focus(); }
+function revokeSession(id,btn){
+  const row=btn?btn.closest('.sess-item'):null;
+  const who=row?row.querySelector('.em').textContent.trim():'this session';
+  if(!confirm(`Revoke session ${who}? That device must log in again.`)) return;
+  if(btn) btn.disabled=true;
   fetch('/api/session/revoke',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})})
-    .then(r=>r.json()).then(d=>{ if(d.ok) openSessions(); else toast('<i class="fa-solid fa-triangle-exclamation"></i> revoke failed'); })
-    .catch(()=>toast('<i class="fa-solid fa-triangle-exclamation"></i> revoke failed'));
+    .then(r=>r.json()).then(d=>{ if(d.ok){ toast('<i class="fa-solid fa-check" aria-hidden="true"></i> revoked — that device must log in again'); openSessions(); } else toast('<i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> revoke failed — try again'); })
+    .catch(()=>toast('<i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> revoke failed'))
+    .finally(()=>{ if(btn) btn.disabled=false; });
 }
 function toggleDD(e){
   e.stopPropagation();
   const open=$('dd').classList.toggle('open');
+  $('ddbtn').setAttribute('aria-expanded',open?'true':'false');
   if(open && window.innerWidth<=820){
     // anchor the dropdown just below the trigger so it never jumps with content
     const r=$('ddbtn').getBoundingClientRect();
@@ -252,8 +272,14 @@ function toggleDD(e){
     p.style.top=(r.bottom+6)+'px';
   }
 }
-function closeDD(){ $('dd').classList.remove('open'); }
+function closeDD(refocus){ const was=$('dd').classList.contains('open'); $('dd').classList.remove('open'); $('ddbtn').setAttribute('aria-expanded','false'); if(refocus&&was) $('ddbtn').focus(); }
+function ddKey(e,email){
+  if(e.key==='Enter'||e.key===' '){ e.preventDefault(); openAcc(email); closeDD(); $('ddbtn').focus(); }
+  else if(e.key==='ArrowDown'||e.key==='ArrowUp'){ e.preventDefault(); const items=[...document.querySelectorAll('#ddpanel .dditem')]; const i=items.indexOf(e.currentTarget); const n=e.key==='ArrowDown'?items[i+1]||items[0]:items[i-1]||items[items.length-1]; if(n) n.focus(); }
+  else if(e.key==='Escape'){ e.stopPropagation(); closeDD(true); }
+}
 document.addEventListener('click',(e)=>{ if(!e.target.closest('#dd')) closeDD(); });
+document.addEventListener('keydown',(e)=>{ if(e.key==='Escape'&&$('detail').classList.contains('open')&&!$('sessmodal').classList.contains('open')) closeDetail(); });
 async function openAcc(email,opts={}){
   const gen=++accGen;
   openGen++; // invalidate any in-flight thread open
@@ -263,18 +289,18 @@ async function openAcc(email,opts={}){
   try{ await fetch('/api/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email})}); }catch{}
   const a=accs.find(x=>x.email===email);
   $('state').className='badge '+(a&&a.last_error?'err':(opts.silent?'on':'sync'));
-  $('state').innerHTML=a&&a.last_error?'<i class="fa-solid fa-triangle-exclamation"></i> '+esc(a.last_error):(opts.silent?'● live':'syncing…');
+  $('state').innerHTML=a&&a.last_error?'<i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> '+esc(a.last_error):(opts.silent?'● live':'syncing…');
   $('address').textContent=email;
   $('hacc').textContent=(a&&a.last_sync)?'last sync '+new Date(a.last_sync).toLocaleTimeString():'never synced';
   const list=$('list');
-  if(!opts.silent) list.innerHTML='<div class="empty">loading…</div>';
+  if(!opts.silent&&threads.length===0) list.innerHTML='<div role="status" aria-label="loading messages"><div class="msg" aria-hidden="true"><div class="subj">loading…</div><div class="snip">loading…</div></div><div class="msg" aria-hidden="true"><div class="subj">loading…</div><div class="snip">loading…</div></div><div class="msg" aria-hidden="true"><div class="subj">loading…</div><div class="snip">loading…</div></div></div>';
   closeDetail(); // closes open mail cleanly, home stays hidden until renderList
   try{
     const msgs=await j(`/api/accounts/${encodeURIComponent(email)}/messages?limit=100`);
     if(gen!==accGen || email!==current) return; // stale — account switched mid-load
     threads=msgs; renderList();
     $('state').className='badge on'; $('state').textContent='● live';
-  }catch(e){ if(e===0) location.href='/login.html'; else if(!opts.silent && gen===accGen) $('list').innerHTML='<div class="empty">failed to load</div>'; }
+  }catch(e){ if(e===0) location.href='/login.html'; else if(!opts.silent && gen===accGen) $('list').innerHTML='<div class="empty">failed to load<br><br><button class="btn" onclick="openAcc(current)">Retry</button></div>'; }
 }
 function cleanSubj(s){ const t=String(s||'').trim(); return t&&!/^\(?(no subject|unknown|\(unknown sender\))\)?$/i.test(t) ? t : ''; }
 function cleanSender(s){ const t=String(s||'').trim(); if(!t) return ''; return /^\(unknown sender\)$/i.test(t) ? '' : t; }
@@ -301,18 +327,19 @@ async function openThread(tid){
   const ifr=$('dbody');
   // find the thread in the current list for an instant preview
   const t=threads.find(x=>x.thread_id===tid);
-  $('dsubj').textContent=t?.subject||'loading…';
+  $('dsubj').textContent=t?.subject||'loading…'; $('dsubj').title=$('dsubj').textContent;
   const fmt=(ms)=>ms?(new Date(ms).toString()==='Invalid Date'?'':new Date(ms).toLocaleString()):'';
   writeBody(ifr, `<div style="padding:18px;font:13px system-ui;color:#666">${esc(t?.snippet||'loading message…')}</div>`);
   let msgs=[];
   try{ const r=await j(`/api/accounts/${encodeURIComponent(current)}/messages/${encodeURIComponent(tid)}`); msgs=Array.isArray(r)?r:[]; }catch(e){ msgs=[]; }
   if(gen!==openGen || current!==$('address').textContent){ openingTid=null; return; } // stale — account switched
   openingTid=null;
-  if(!msgs.length){ toast('<i class="fa-solid fa-triangle-exclamation"></i> could not load this email'); closeDetail(); return; }
-  $('dsubj').textContent=msgs[0]?.subject||'(no subject)';
-  const html=msgs.map(m=>`<div style="border-bottom:1px solid #e4e7ec;padding:14px 18px;font:13px system-ui;background:#f8fafc"><b>${esc(m.sender||'')}</b> ${m.sender_name?`<span style="color:#888">${esc(m.sender_name)}</span>`:''} ${fmt(m.ts)?`· ${fmt(m.ts)}`:''}<br>${m.recipients?`<span style="color:#888">To:</span> ${esc(m.recipients)}`:''}</div><div style="padding:16px 18px">${m.body_html?`<div style="font-size:14px;line-height:1.6">${m.body_html}</div>`:`<div style="font-size:13px;color:#444;line-height:1.6">${esc(m.snippet||'(no body)')}</div>`}</div>`).join('<hr style="border:0;border-top:1px solid #eef1f5">');
+  if(!msgs.length){ toast('<i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> could not load this email'); closeDetail(); return; }
+  $('dsubj').textContent=msgs[0]?.subject||'(no subject)'; $('dsubj').title=$('dsubj').textContent;
+  const html=msgs.map(m=>`<div style="border-bottom:1px solid #e4e7ec;padding:14px 18px;font:13px system-ui;background:#f8fafc"><b>${esc(m.sender||'')}</b> ${m.sender_name?`<span style="color:#888">${esc(m.sender_name)}</span>`:''} ${fmt(m.ts)?`· ${fmt(m.ts)}`:''}<br>${m.recipients?`<span style="color:#888">To:</span> ${esc(m.recipients)}`:''}</div><div style="padding:16px 18px">${m.body_html?`<div style="font-size:14px;line-height:1.6">${stripDanger(m.body_html)}</div>`:`<div style="font-size:13px;color:#444;line-height:1.6">${esc(m.snippet||'(no body)')}</div>`}</div>`).join('<hr style="border:0;border-top:1px solid #eef1f5">');
   writeBody(ifr, html);
 }
+function stripDanger(h){ return String(h||'').replace(/<\/?(form|object|base)[^>]*>/gi,''); }
 // write into the iframe via document.write — far more reliable than srcdoc with
 // raw Gmail HTML (which can contain stray </style>/<base> that break srcdoc parsing).
 function writeBody(ifr, html){
@@ -331,22 +358,37 @@ function writeBody(ifr, html){
 function closeDetail(){ $('detail').classList.remove('open'); $('home').style.display = threads.length===0 ? 'flex' : 'none'; }
 async function refresh(){
   const a=accs.find(x=>x.email===current); if(!a) return;
-  const btn=$('refreshbtn'); btn.disabled=true; btn.innerHTML='<i class="fa-solid fa-circle-notch fa-spin"></i> Syncing…';
+  const btn=$('refreshbtn'); btn.disabled=true; btn.innerHTML='<i class="fa-solid fa-circle-notch fa-spin" aria-hidden="true"></i> Syncing…';
   $('state').className='badge sync'; $('state').textContent='syncing…';
   try{ await fetch(`/api/accounts/${encodeURIComponent(current)}/messages/refresh`,{method:'POST'}); }catch{}
   await loadAccounts({silent:true});
-  btn.disabled=false; btn.innerHTML='<i class="fa-solid fa-rotate-right"></i> refresh';
+  btn.disabled=false; btn.innerHTML='<i class="fa-solid fa-rotate-right" aria-hidden="true"></i> refresh';
   $('state').className='badge on'; $('state').textContent='● live';
-  toast(`<i class="fa-solid fa-check"></i> synced · ${threads.length} threads`);
+  toast(`<i class="fa-solid fa-check" aria-hidden="true"></i> synced · ${threads.length} threads`);
 }
-function copyAddr(){ copyText(current||''); }
-function copyText(t){ navigator.clipboard.writeText(t).then(()=>toast('<i class="fa-regular fa-copy"></i> copied')).catch(()=>{}); }
+function copyAddr(){ if(!current){ toast('choose an account first'); return; } copyText(current); }
+function copyText(t){ navigator.clipboard.writeText(t).then(()=>toast('<i class="fa-regular fa-copy" aria-hidden="true"></i> copied')).catch(()=>{}); }
 function toast(msg){ const t=$('toast'); t.innerHTML=msg; t.classList.add('show'); clearTimeout(toast._h); toast._h=setTimeout(()=>t.classList.remove('show'),3200); }
 function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ closeDetail(); closeDD(); } });
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){
+    if($('sessmodal').classList.contains('open')){ closeSessions(); return; }
+    if($('dd').classList.contains('open')){ closeDD(true); return; }
+    closeDetail(); closeDD();
+  }
+  if(e.key==='Tab'&&$('sessmodal').classList.contains('open')){
+    const f=[...$('sessmodal').querySelectorAll('button,[href],input,select,[tabindex]:not([tabindex="-1"])')].filter(el=>!el.disabled&&el.offsetParent!==null);
+    if(!f.length) return;
+    const first=f[0], last=f[f.length-1];
+    if(e.shiftKey&&document.activeElement===first){ e.preventDefault(); last.focus(); }
+    else if(!e.shiftKey&&document.activeElement===last){ e.preventDefault(); first.focus(); }
+  }
+});
 const es=new EventSource('/api/sse');
 es.addEventListener('update',e=>{ loadAccounts({silent:true}); });
-es.addEventListener('new',e=>{const d=JSON.parse(e.data); if(d.email!==current) toast('<i class="fa-solid fa-inbox"></i> new mail in '+d.email); else { loadAccounts({silent:true}); toast('<i class="fa-solid fa-inbox"></i> new mail — inbox updated'); } });
+es.addEventListener('new',e=>{ let d; try{ d=JSON.parse(e.data); }catch{ return; } if(d.email!==current) toast('<i class="fa-solid fa-inbox" aria-hidden="true"></i> new mail in '+esc(d.email)); else { loadAccounts({silent:true}); toast('<i class="fa-solid fa-inbox" aria-hidden="true"></i> new mail — inbox updated'); } });
+es.onerror=()=>{ $('state').className='badge err'; $('state').textContent='reconnecting… (auto-retry)'; };
+es.onopen=()=>{ $('state').className='badge on'; $('state').textContent='● live'; };
 (function(){try{const c=JSON.parse(sessionStorage.getItem('mailhub_creds')||'null');if(c?.apiKey){$('credchips').innerHTML=`<span class="muted">key in <a href="/docs">docs</a> (masked here)</span>`;}}catch(_){}})();
 loadAccounts({silent:true}).catch(()=>location.href='/login.html');
 </script>

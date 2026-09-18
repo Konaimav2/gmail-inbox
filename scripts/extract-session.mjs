@@ -42,9 +42,18 @@ if (!logged.split("\n").some((l) => l.startsWith(email + "|"))) {
   const list = existsSync(LIST_FILE) ? readFileSync(LIST_FILE, "utf8") : "";
   const line = list.split("\n").find((l) => l.startsWith(email + "|"));
   const pw = line ? line.split("|")[1] || "" : "";
-  logged += `${email}|${pw}|\n`;
+  const totp = line ? line.split("|")[2] || "" : "";
+  logged += `${email}|${pw}|${totp}\n`;
   writeFileSync(LOGGED_FILE, logged);
   console.log("moved to loggedmail.txt");
+}
+// atomically remove from list.txt so it won't be re-picked
+{
+  const t = existsSync(LIST_FILE) ? readFileSync(LIST_FILE, "utf8") : "";
+  const filtered = t.split("\n").filter((l) => l.trim() && !l.trim().startsWith(email + "|"));
+  if (filtered.length !== t.split("\n").filter((l) => l.trim()).length) {
+    writeFileSync(LIST_FILE, filtered.join("\n") + (filtered.length ? "\n" : ""));
+  }
 }
 const failed = join(ROOT, "failed.txt");
 if (existsSync(failed)) {

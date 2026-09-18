@@ -131,7 +131,8 @@ blind timeout which caused false failures.
 - Both are logged to `failed.txt` with clear reason
 
 2FA automation: if the authenticator setup screen shows a key, the batch logs it,
-**saves it to `.2fa-secrets`**, and later auto-fills the code via a **local RFC-6238 TOTP generator** (no network needed).
+**saves it to `.2fa-secrets`**, and later auto-fills the code — via 2fa.live if it
+responds, otherwise via a **local RFC-6238 TOTP generator** (no network needed).
 
 ### Routing / rotating proxies (`--proxy`)
 Route the login browser through a proxy so the login IP differs from the server IP
@@ -178,26 +179,4 @@ active. Realtime new-mail check runs every `MONITOR_SECONDS` (default 120s) for 
 
 > ⚠️ **CREATED USING DEEPSEEK V4 FLASH** — AI-generated. Use at your own risk;
 > review before deploying in production.
-
-## Issues & Bug Reports
-
-Please report bugs, request features, or ask questions via the **GitHub Issues** tab:
-
-🔗 **https://github.com/Konaimav2/gmail-inbox/issues**
-
-Before opening an issue:
-1. Check existing issues to avoid duplicates
-2. Include OS / Node.js version and the exact command
-3. **Never paste live credentials, cookies, or API keys** into an issue
-4. Attach sanitized logs (redact emails/tokens)
-
-## Contact
-
-- **Maintainer:** Konaimav2
-- **GitHub:** [github.com/Konaimav2](https://github.com/Konaimav2)
-- **Telegram:** [@konaima](https://t.me/konaima)
-- **Email:** [arraffi@arraffi.com](mailto:arraffi@arraffi.com)
-- **Issue tracker:** [https://github.com/Konaimav2/gmail-inbox/issues](https://github.com/Konaimav2/gmail-inbox/issues)
-
-For security concerns (credential leaks, vulnerabilities), **do not** open a public issue — reach out privately via Telegram or email instead.
 

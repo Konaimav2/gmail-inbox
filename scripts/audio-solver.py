@@ -8,32 +8,59 @@ Reuses the exact proven pipeline from th-webshare._solve_recaptcha_audio:
 MP3 -> ffmpeg -> WAV -> Google Speech Recognition -> answer text.
 """
 import json
+import os
 import sys
+import tempfile
 import time
-from pathlib import Path
 
-BASE = Path("/root/temp/token-harbor")
+MAX_AUDIO_BYTES = 5 * 1024 * 1024  # ~5MB download cap
+
+
+def _download_capped(audio_url, timeout=20):
+    import requests as _rq
+    with _rq.get(audio_url, timeout=timeout, stream=True,
+                 headers={"User-Agent": "Mozilla/5.0"}) as r:
+        r.raise_for_status()
+        clen = r.headers.get("Content-Length")
+        if clen is not None:
+            try:
+                clen = int(clen)
+            except (TypeError, ValueError):
+                clen = None
+            if clen is not None and clen > MAX_AUDIO_BYTES:
+                raise ValueError(f"audio too large (Content-Length {clen} > 5MB cap)")
+        chunks = []
+        total = 0
+        for chunk in r.iter_content(chunk_size=65536):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > MAX_AUDIO_BYTES:
+                raise ValueError("audio too large (> 5MB cap)")
+            chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def solve(audio_url, attempts=4):
     for attempt in range(1, attempts + 1):
+        mp3_path = None
+        wav_path = None
         try:
             import speech_recognition as sr
             rec = sr.Recognizer()
         except Exception as e:
             return {"ok": False, "error": f"sr import: {e}"}
         try:
-            import requests as _rq
-            audio_bytes = _rq.get(audio_url, timeout=20,
-                                  headers={"User-Agent": "Mozilla/5.0"}).content
-            mp3 = str(BASE / "_captcha_audio.mp3")
-            wav = str(BASE / "_captcha_audio.wav")
-            with open(mp3, "wb") as f:
+            audio_bytes = _download_capped(audio_url)
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
                 f.write(audio_bytes)
+                mp3_path = f.name
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                wav_path = f.name
             from pydub import AudioSegment
-            AudioSegment.from_file(mp3).export(wav, format="wav")
+            AudioSegment.from_file(mp3_path).export(wav_path, format="wav")
 
-            with sr.AudioFile(wav) as source:
+            with sr.AudioFile(wav_path) as source:
                 audio = rec.record(source)
             try:
                 answer = rec.recognize_google(audio, language="en-US")
@@ -46,6 +73,13 @@ def solve(audio_url, attempts=4):
         except Exception as e:
             print(f"[solver] attempt {attempt} error: {str(e)[:80]}", file=sys.stderr)
             time.sleep(1)
+        finally:
+            for _p in (mp3_path, wav_path):
+                try:
+                    if _p:
+                        os.unlink(_p)
+                except OSError:
+                    pass
     return {"ok": False, "error": "all attempts failed"}
 
 

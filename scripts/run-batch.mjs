@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 // run-batch: semi-auto Gmail login batch from list.txt (email|password|2fa token optional)
 // Flow: setup VNC+Chromium -> count accounts -> loop: login, handle challenge (phone-tap / passkey / code / selfie-home-phone skips), save cookies, next.
+// VNC/Xvfb exist ONLY for run-batch interactive challenges (QR/captcha/phone-tap human assist).
+// Mail fetch never spawns a browser (it is HTTP elsewhere); VNC stack is batch-only.
 import { execSync, spawnSync, spawn } from "node:child_process";
 import crypto from "node:crypto";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync, appendFileSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+
+process.umask(0o077);
+const maskSecret = (s) => String(s || "").slice(0, 2) + "****";
+const maskCode = (s) => String(s || "").slice(0, 2) + "****";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 // prefer system chrome; fall back to agent-browser
@@ -22,6 +27,31 @@ const CHROME = (() => {
   }
   return "chromium";
 })();
+// Lightweight ladder: low-memory flags for both headful and headless Chrome.
+const LOWMEM_ARGS = ["--disable-dev-shm-usage", "--disable-gpu", "--blink-settings=imagesEnabled=false"];
+// Detect chrome-headless-shell binary (sibling of CHROME candidates) for --no-vnc runs; fallback to headless Chrome.
+const CHROME_HEADLESS_SHELL = (() => {
+  try { const p = spawnSync("bash", ["-c", `command -v 'chrome-headless-shell'`], { encoding: "utf8" }).stdout.trim(); if (p && existsSync(p)) return p; } catch {}
+  try { const s = join(dirname(CHROME), "chrome-headless-shell"); if (existsSync(s)) return s; } catch {}
+  for (const c of CHROME_CANDIDATES) {
+    try { if (String(c).includes("/")) { const s = join(dirname(String(c)), "chrome-headless-shell"); if (existsSync(s)) return s; } } catch {}
+  }
+  return null;
+})();
+const chromeBinary = (headless) => (headless && CHROME_HEADLESS_SHELL ? CHROME_HEADLESS_SHELL : CHROME);
+function baseChromeArgs(headless) {
+  const a = [`--user-data-dir=${PROFILE}`, "--no-sandbox", "--no-first-run", "--disable-background-networking", "--window-size=1366,900", "--remote-debugging-port=9222", ...LOWMEM_ARGS];
+  if (headless) a.push("--headless=new");
+  a.push("about:blank");
+  return a;
+}
+// P2-1 one browser per batch: periodic hard restart cadence (Google 8-account session cap).
+// Reuse the single Chrome across accounts; hard-restart only on CDP-unreachable, proxy switch,
+// or every BROWSER_RESTART_EVERY accounts (default 8, env override).
+const BROWSER_RESTART_EVERY = Math.max(1, parseInt(process.env.BROWSER_RESTART_EVERY || "8", 10) || 8);
+let CURRENT_PROXY = null; // proxy the live browser was started with (null = direct)
+let ACCOUNTS_SINCE_RESTART = 0;
+let BROWSER_STARTED = false;
 const PROFILE = join(ROOT, ".chrome-profile");
 const COOKIE_DIR = join(ROOT, "cookies");
 const LIST_FILE = join(ROOT, "list.txt");
@@ -51,17 +81,35 @@ function markFailed(email, reason, pw = "", tok = "") {
   try {
     const cur = existsSync(FAILED_FILE) ? readFileSync(FAILED_FILE, "utf8") : "";
     const lines = cur.split("\n").filter((l) => !l.startsWith(email + "|"));
-    // format: email|password|[2fa] — keep the credential so the account can be
-    // retried with 2FA on (token literal or .2fa-secrets authenticator).
-    lines.push(pw ? `${email}|${pw}${tok ? `|${tok}` : ""}` : `${email}|${reason}`);
-    writeFileSync(FAILED_FILE, lines.join("\n") + "\n");
+    // Per spec: From list.txt (email|pass|2fa) -> Success loggedmail(email|pass|2fa), Failed failed.txt(email|pass|2fa|reason)
+    // Preserve full credential so account can be retried with the same 2FA token.
+    const safeReason = String(reason ?? "").replace(/\|/g, " ");
+    lines.push(pw ? `${email}|${pw}|${tok || ""}|${safeReason}` : `${email}|${safeReason}`);
+    writeFileSync(FAILED_FILE, lines.join("\n") + "\n", { mode: 0o600 });
   } catch {}
 }
 function clearFailed(email) {
   try {
     const cur = existsSync(FAILED_FILE) ? readFileSync(FAILED_FILE, "utf8") : "";
-    writeFileSync(FAILED_FILE, cur.split("\n").filter((l) => !l.startsWith(email + "|")).join("\n"));
+    writeFileSync(FAILED_FILE, cur.split("\n").filter((l) => !l.startsWith(email + "|")).join("\n"), { mode: 0o600 });
   } catch {}
+}
+function parseLine(l) {
+  const idx = l.indexOf("|");
+  if (idx <= 0) return null;
+  const email = l.slice(0, idx).trim();
+  let rest = l.slice(idx + 1), reason = "";
+  const lb = rest.lastIndexOf("|");
+  if (lb > 0) {
+    const tail = rest.slice(lb + 1).trim(), mid = rest.slice(0, lb), ml = mid.lastIndexOf("|"), mt = ml >= 0 ? mid.slice(ml + 1).trim() : "";
+    if (tail && !/^\d{1,8}$/.test(tail) && mid.includes("|") && (mt === "" || /^\d{1,8}$/.test(mt))) { reason = tail; rest = mid; }
+  }
+  let pw = rest, tok = "";
+  if (pw.endsWith("|")) pw = pw.slice(0, -1);
+  const lastBar = pw.lastIndexOf("|");
+  if (lastBar > 0) { const t = pw.slice(lastBar + 1).trim(); if (/^\d{1,8}$/.test(t)) { tok = t; pw = pw.slice(0, lastBar).trim(); } }
+  if (!pw && rest) pw = rest;
+  return { email, pw, tok, reason };
 }
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
 // minimal cookie-jar fetch (mirrors server): follows redirects + applies Set-Cookie
@@ -98,13 +146,27 @@ async function cookieValid(email) {
     return status === 200 && /\"simls\",null,\"/.test(body);
   } catch { return false; }
 }
+async function reconcileFailed() {
+  try {
+    for (const l of (existsSync(FAILED_FILE) ? readFileSync(FAILED_FILE, "utf8") : "").split("\n").filter(Boolean)) {
+      const p = parseLine(l); if (!p) continue;
+      if (await cookieValid(p.email)) {
+        const lg = existsSync(LOGGED_FILE) ? readFileSync(LOGGED_FILE, "utf8") : "";
+        if (!lg.split("\n").some((x) => x.startsWith(p.email + "|"))) appendFileSync(LOGGED_FILE, `${p.email}|${p.pw}|${p.tok || ""}\n`, { mode: 0o600 });
+        clearFailed(p.email);
+      }
+    }
+    log("reconciled valid cookies");
+  } catch {}
+}
 const DISPLAY = ":99";
 const CDP = "http://127.0.0.1:9222";
-const OUT = "/tmp/batch-out.txt";
+const OUT = join(ROOT, ".batch-out.txt");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-mkdirSync(COOKIE_DIR, { recursive: true });
-const log = (s) => { const line = s; console.log(line); try { appendFileSync(OUT, line + "\n"); } catch {} };
+mkdirSync(COOKIE_DIR, { recursive: true, mode: 0o700 });
+const log = (s) => { const line = s; console.log(line); try { appendFileSync(OUT, line + "\n", { mode: 0o600 }); } catch {} };
 const sh = (cmd, opts = {}) => { try { return spawnSync("bash", ["-c", cmd], { encoding: "utf8", ...opts }).stdout.trim(); } catch { return ""; } };
+const UID = sh("id -u") || String(process.getuid?.() ?? "");
 
 // ------------------------------------------------ setup
 log("-> Checking dependencies....");
@@ -138,12 +200,14 @@ if (missing.length) {
   if (missing.includes("chromium")) { log("!! chromium missing, cannot proceed"); process.exit(1); }
 }
 const VNC_BIND = (loadEnv().VNC_BIND || "127.0.0.1"); // configurable via .env
+if (!["127.0.0.1", "localhost", "::1"].includes(VNC_BIND)) log(`!! VNC_BIND=${VNC_BIND} is non-loopback — no TLS on :6080, use SSH tunnel`);
 // ensure /opt/noVNC/index.html -> vnc.html for convenience (http://ip:6080/ serves viewer directly)
 try { sh("ln -sf vnc.html /opt/noVNC/index.html"); } catch {}
 log("-> Setting up VNC and Chromium....");
 const NO_VNC_FLAG = process.argv.slice(2).includes("--no-vnc");
+const USE_SECURITY_CODE = process.argv.slice(2).includes("--security-code") || !!process.env.USE_SECURITY_CODE;
 if (!NO_VNC_FLAG) {
-  sh(`pkill -f "[X]vfb ${DISPLAY}" ; pkill -f "[r]emote-debugging-port=9222" ; pkill -f "[x]11vnc -display ${DISPLAY}" ; pkill -f "[w]ebsockify 6080" ; pkill -f "[c]hromium-browser --no-sandbox" ; sleep 1`);
+  sh(`pkill -u ${UID} -f "[X]vfb ${DISPLAY}" ; pkill -u ${UID} -f "[r]emote-debugging-port=9222" ; pkill -u ${UID} -f "[x]11vnc -display ${DISPLAY}" ; pkill -u ${UID} -f "[w]ebsockify 6080" ; pkill -u ${UID} -f "[c]hromium-browser --no-sandbox" ; sleep 1`);
 } else {
   log("-> --no-vnc: VNC/Xvfb disabled (headless Chrome only)");
 }
@@ -178,22 +242,34 @@ if (pf.length) {
   log("-> Preflight OK (display, shm, RAM, profile, network).");
 }
 sh(`rm -rf ${PROFILE}/Default/Cookies* 2>/dev/null; true`);
-const detach = (cmd, args) => { const c = spawn(cmd, args, { detached: true, env: { ...process.env, DISPLAY }, stdio: ["ignore", "ignore", "ignore"] }); c.unref(); return c; };
+const SPAWNED = [];
+const detach = (cmd, args) => { const c = spawn(cmd, args, { detached: true, env: { ...process.env, DISPLAY }, stdio: ["ignore", "ignore", "ignore"] }); try { SPAWNED.push(c); } catch {} c.unref(); return c; };
 if (!NO_VNC_FLAG) {
   detach("Xvfb", [DISPLAY, "-screen", "0", "1366x900x24", "-ac"]);
   await sleep(1500);
-  detach(CHROME, [`--user-data-dir=${PROFILE}`, "--no-sandbox", "--no-first-run", "--disable-background-networking", "--window-size=1366,900", "--remote-debugging-port=9222", "about:blank"]);
+  detach(chromeBinary(false), baseChromeArgs(false));
+  BROWSER_STARTED = true; CURRENT_PROXY = null; ACCOUNTS_SINCE_RESTART = 0;
+  log(`-> Chrome binary/mode: ${chromeBinary(false)} (headful Chrome + low-mem flags)`);
   await sleep(2500);
-  detach("x11vnc", ["-display", DISPLAY, "-forever", "-shared", "-passwd", VNCPASS, "-rfbport", "5900", "-bg", "-o", "/tmp/batch-x11vnc.log"]);
+  // x11vnc password via -passwdfile (0600 temp file, deleted after spawn) — never on cmdline
+  const vncPassFile = join(ROOT, `.x11vnc-passwd-${process.pid}-${crypto.randomBytes(4).toString("hex")}`);
+  try { writeFileSync(vncPassFile, VNCPASS + "\n", { mode: 0o600 }); } catch {}
+  detach("x11vnc", ["-display", DISPLAY, "-forever", "-shared", "-passwdfile", vncPassFile, "-rfbport", "5900", "-bg", "-o", "/tmp/batch-x11vnc.log"]);
+  await sleep(1500);
+  try { unlinkSync(vncPassFile); } catch {}
   // WebSocket tunnel + noVNC web UI for human assistance (QR/captcha/phone).
   // --web=/opt/noVNC serves ONLY noVNC's own files (vnc.html, js, css) — NOT project files.
   // websockify may resolve to "python3 -m websockify" or a bare binary; detach expects (cmd, args)
   const [wsCmd, ...wsPre] = String(WEBSOCKIFY).split(" ");
   detach(wsCmd, [...wsPre, `--web=/opt/noVNC`, `${VNC_BIND}:6080`, `localhost:5900`]);
   log(`-> VNC ready: http://${VNC_BIND}:6080/  (password in .env VNC_PASSWORD)`);
+  log("-> VNC stack is batch-only; mail fetch never spawns a browser");
 } else {
   log("-> --no-vnc: skipping Xvfb/VNC, starting headless Chromium...");
-  detach(CHROME, [`--user-data-dir=${PROFILE}`, "--no-sandbox", "--no-first-run", "--disable-background-networking", "--window-size=1366,900", "--remote-debugging-port=9222", "about:blank"]);
+  detach(chromeBinary(true), baseChromeArgs(true));
+  BROWSER_STARTED = true; CURRENT_PROXY = null; ACCOUNTS_SINCE_RESTART = 0;
+  log(`-> Chrome binary/mode: ${chromeBinary(true)} (${CHROME_HEADLESS_SHELL ? "chrome-headless-shell headless" : "headless Chrome fallback"} + low-mem flags)`);
+  log("-> VNC stack is batch-only; mail fetch never spawns a browser");
   await sleep(2500);
 }
 // wait CDP
@@ -207,7 +283,9 @@ for (const l of lines) {
   const idx = l.indexOf("|");
   if (idx <= 0) { markFailed(l.slice(0, 40), "bad format"); continue; }
   const email = l.slice(0, idx).trim();
-  const rest = l.slice(idx + 1);
+  let rest = l.slice(idx + 1);
+  // tolerate optional trailing |reason (failed.txt reuse): strip it, keep pw|tok intact
+  { const p = parseLine(l); if (p && p.reason) rest = rest.slice(0, rest.lastIndexOf("|")); }
   // password = EVERYTHING after the first | (may itself contain |);
   // 3rd field (after the last |) can be: a numeric TOTP code, a base32 secret,
   // or empty (no 2FA).
@@ -236,6 +314,7 @@ for (const l of lines) {
 }
 const invalid = lines.length - accounts.length;
 log(`-> Find ${accounts.length} valid and ${invalid} invalid format! Setting the loop to ${accounts.length}....`);
+await reconcileFailed();
 
 // ------------------------------------------------ cdp helpers
 let ws, send, pageTarget;
@@ -355,14 +434,16 @@ async function solveAudioCaptcha(timeoutMs = 60000) {
   const { execFileSync } = await import("node:child_process");
   let answer = "";
   try {
-    const out = execFileSync("/root/temp/token-harbor/.venv/bin/python3",
-      [__dirname + "/audio-solver.py"], { input: JSON.stringify({ audio_url: src }), encoding: "utf8", timeout: 40000, stdio: ["pipe","pipe","pipe"] });
+    const solverPy = process.env.AUDIO_SOLVER_PY || "python3";
+    const solverPath = join(ROOT, "scripts/audio-solver.py");
+    const out = execFileSync(solverPy,
+      [solverPath], { input: JSON.stringify({ audio_url: src }), encoding: "utf8", timeout: 40000, stdio: ["pipe","pipe","pipe"] });
     const parsed = JSON.parse(out.trim().split("\n").pop());
     if (parsed.ok && parsed.answer) { answer = parsed.answer; }
     else log("-> Audio auto-solve: transcription failed: " + (parsed.error || "?"));
   } catch (e) { log("-> Audio auto-solve: python helper error: " + String(e).slice(0,80)); return false; }
   if (!answer) return false;
-  log(`-> Audio auto-solve: heard "${answer}"`);
+  log(`-> Audio auto-solve: heard "${maskCode(answer)}"`);
 
   // type + verify inside the challenge frame (cross-origin safe)
   await runInCaptchaFrame(`(() => {
@@ -433,14 +514,14 @@ async function saveCookies(email) {
   const { result } = await send("Network.getAllCookies");
   const cookies = (result?.cookies || []).filter((c) => c.domain.includes("google.com"));
   if (!cookies.some((c) => ["SID", "SSID", "__Secure-1PSID"].includes(c.name) && c.value.length > 20)) return false;
-  writeFileSync(join(COOKIE_DIR, email.replace(/[@.]/g, "_") + ".json"), JSON.stringify(cookies, null, 2));
+  writeFileSync(join(COOKIE_DIR, email.replace(/[@.]/g, "_") + ".json"), JSON.stringify(cookies, null, 2), { mode: 0o600 });
   return true;
 }
 const SS_DIR = join(ROOT, "screenshots");
-mkdirSync(SS_DIR, { recursive: true });
+mkdirSync(SS_DIR, { recursive: true, mode: 0o700 });
 async function screenshot(email) {
   const file = join(SS_DIR, `fail-${email.replace(/[@.]/g,"_")}.png`);
-  try { const s = await send("Page.captureScreenshot", { format: "png" }); writeFileSync(file, Buffer.from(s.result.data, "base64")); log("-> Screenshot saved: " + file); return true; } catch { return false; }
+  try { const s = await send("Page.captureScreenshot", { format: "png" }); writeFileSync(file, Buffer.from(s.result.data, "base64"), { mode: 0o600 }); log("-> Screenshot saved: " + file); return true; } catch { return false; }
 }
 
 // ── QR-to-terminal: extract the Google QR image, downsample in-page via canvas,
@@ -515,7 +596,7 @@ function extractCode(text) {
 }
 const MAILRE = /^https:\/\/mail\.google\.com\/mail/;
 
-// ---- 2FA.live auto-fill ----
+// ---- TOTP auto-fill (local RFC 6238 only) ----
 // store per-account authenticator secrets in a plaintext file (email|secret),
 // fetched from the 2FA-setup screen (or provided by the user).
 const SECRETS_FILE = join(ROOT, ".2fa-secrets"); // email|base32-secret
@@ -532,18 +613,7 @@ function getSecret(email) {
 async function fetch2FA(email) {
   const secret = getSecret(email);
   if (!secret) return null;
-  // 1) try 2fa.live (the provider the user named) — may be down/renamed, so fall through
-  try {
-    const url = `https://2fa.live/totp/${encodeURIComponent(secret)}`;
-    const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    const ct = r.headers.get("content-type") || "";
-    if (ct.includes("json")) {
-      const j = await r.json();
-      const code = j?.token || j?.code || j?.data?.token || j?.data?.code;
-      if (code && /^\d{6}$/.test(String(code))) return { code: String(code), source: "2fa.live" };
-    }
-  } catch {}
-  // 2) compute TOTP locally (RFC 6238 / HMAC-SHA1, 30s step, 6 digits) — offline, always works
+  // compute TOTP locally (RFC 6238 / HMAC-SHA1, 30s step, 6 digits) — offline, always works
   try {
     const { createHmac } = await import("node:crypto");
     const base32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -573,6 +643,40 @@ function saveSecretFromScreen(email, key) {
   } catch { return null; }
 }
 
+// P1-1 opt-in security-code shortcut (tap-notification stays DEFAULT).
+// When USE_SECURITY_CODE is set (--security-code flag or env), the Verify-it's-you
+// branch clicks "Try another way" FIRST, then picks in order:
+//   Get a security code|security code on your phone -> Text message|SMS
+//   -> existing TOTP autofill -> tap-number relay as LAST fallback.
+async function trySecurityCodeMethod() {
+  const sec = await evalJs(`(() => {
+    const opts=[...document.querySelectorAll('button,[role=button],a,li,div')];
+    const re=/Get a security code|security code on your phone/i;
+    const el=opts.find(x=>re.test((x.innerText||'').trim()) && (x.innerText||'').trim().length<80);
+    if(el){el.click();return true;} return false;
+  })()`).catch(() => false);
+  if (sec) { log("-> Selected security-code method"); await sleep(2500); return true; }
+  const sms = await evalJs(`(() => {
+    const opts=[...document.querySelectorAll('button,[role=button],a,li,div')];
+    const re=/Text message|\\bSMS\\b/i;
+    const el=opts.find(x=>re.test((x.innerText||'').trim()) && (x.innerText||'').trim().length<80);
+    if(el){el.click();return true;} return false;
+  })()`).catch(() => false);
+  if (sms) { log("-> Selected Text message/SMS method"); await sleep(2500); return true; }
+  return false;
+}
+async function tryTotpAutofill(email, tok) {
+  const stNow = await state().catch(() => null);
+  if (!stNow) return false;
+  const codeInput = (stNow.inputs || []).find((x) => x.includes("tel") || x.includes("code"));
+  if (!codeInput) return false;
+  const sel = codeInput.includes("tel") ? `input[type=tel]` : `input[type=text]`;
+  if (tok) { log("-> Using provided 2FA token"); await setInput(sel, tok); await sleep(300); await clickNext(); await sleep(1500); return true; }
+  const auto = await fetch2FA(email);
+  if (auto) { log(`-> Auto-filled code from ${auto.source}`); await setInput(sel, auto.code); await sleep(300); await clickNext(); await sleep(2000); return true; }
+  return false;
+}
+
 // ------------------------------------------------ main loop
 // success path: save cookies + record to loggedmail
 async function finishLogin(email, pw, tok) {
@@ -582,7 +686,7 @@ async function finishLogin(email, pw, tok) {
   log("-> Login complete, saving cookies....");
   const ok = await saveCookies(email);
   if (ok) {
-    if (await cookieValid(email)) { log("-> Done! (session verified)"); clearFailed(email); try { const LGF = LOGGED_FILE; const cur = existsSync(LGF) ? readFileSync(LGF, "utf8") : ""; if (!cur.split("\n").some((l) => l.startsWith(email + "|"))) appendFileSync(LGF, `${email}|${pw}|${tok || ""}\n`); } catch {} }
+    if (await cookieValid(email)) { log("-> Done! (session verified)"); clearFailed(email); try { const LGF = LOGGED_FILE; const cur = existsSync(LGF) ? readFileSync(LGF, "utf8") : ""; if (!cur.split("\n").some((l) => l.startsWith(email + "|"))) appendFileSync(LGF, `${email}|${pw}|${tok || ""}\n`, { mode: 0o600 }); } catch {} }
     else { log("-> Cookie invalid after login (verification skipped) — marked failed"); markFailed(email, "session invalid", pw, tok); }
   } else log("-> Failed to save cookies (no session).");
   return ok;
@@ -686,7 +790,13 @@ async function loginOne(acc) {
         if (MAILRE.test(st.url)) { return await finishLogin(email, pw, tok); }
         const T = st.text + " " + st.title;
         if (/Verify it's you|Check your/i.test(T)) {
-          if (!findingLogged) { log(`-> Finding text "Verify it's you" and "Passkey" and getting the code`); findingLogged = true; }
+          if (!findingLogged) { log(`-> Finding text "Verify it's you" and "Passkey" and getting the code`); findingLogged = true; log(`-> Verify path: ${USE_SECURITY_CODE ? "security-code (opt-in)" : "tap-notification (default)"}`); }
+          if (USE_SECURITY_CODE) {
+            if (await clickText("Try another way")) await sleep(2500);
+            if (await trySecurityCodeMethod()) { await tryTotpAutofill(email, tok); continue; }
+            if (await tryTotpAutofill(email, tok)) continue;
+            // LAST fallback: tap-number relay below
+          }
           const st2 = await state();
           const code = extractCode(st2.text);
           if (code && !codeLogged) { log(`-> Code found! Click ${code} on your phone. Waiting....`); codeLogged = true; }
@@ -764,16 +874,16 @@ async function loginOne(acc) {
     if (/Open your authenticator app|and this key|space's don't matter|spaces don.t matter|authenticator app/i.test(T) && !/verification code/i.test(T)) {
       const keyMatch = T.match(/([a-z0-9]{4}(?: [a-z0-9]{4})+)/i);
       if (keyMatch) {
-        log(`-> Authenticator setup key found: ${keyMatch[1]}`);
+        log(`-> Authenticator setup key found: ${maskSecret(keyMatch[1])}`);
         const saved = saveSecretFromScreen(email, keyMatch[1]);
-        log(saved ? "-> Saved 2FA secret; future logins auto-fill via 2fa.live" : "-> Could not save 2FA secret");
+        log(saved ? "-> Saved 2FA secret; future logins auto-fill via local TOTP" : "-> Could not save 2FA secret");
         // try to auto-complete right away: fetch code and type it if a code field is present
         const auto = await fetch2FA(email);
         const stNow = await state();
         const codeInput = stNow.inputs.find((x) => x.includes("tel") || x.includes("code"));
         if (auto && codeInput) {
           const sel = codeInput ? `input[type=tel]` : `input[type=text]`;
-          log(`-> Auto-filled code from ${auto.source}: ${auto.code}`);
+          log(`-> Auto-filled code from ${auto.source}: ${maskCode(auto.code)}`);
           await setInput(sel, auto.code); await sleep(300); await submitForm(); await sleep(1500); continue;
         }
         log("-> Waiting for manual 2FA code entry in VNC (or a 2FA token via CLI)...");
@@ -784,7 +894,13 @@ async function loginOne(acc) {
       continue;
     }
     if (/Verify it's you|Check your/i.test(T)) {
-      if (!findingLogged) { log('-> Finding text "Verify it\'s you" and "Passkey" and getting the code'); findingLogged = true; }
+      if (!findingLogged) { log('-> Finding text "Verify it\'s you" and "Passkey" and getting the code'); findingLogged = true; log(`-> Verify path: ${USE_SECURITY_CODE ? "security-code (opt-in)" : "tap-notification (default)"}`); }
+      if (USE_SECURITY_CODE) {
+        if (await clickText("Try another way")) await sleep(2500);
+        if (await trySecurityCodeMethod()) { await tryTotpAutofill(email, tok); continue; }
+        if (await tryTotpAutofill(email, tok)) continue;
+        // LAST fallback: tap-number relay below
+      }
       // Prefer the phone/SMS option over a recovery-email code. If the current
       // screen is the email-code path (an "Enter code" field + recovery-email text),
       // switch to "Try another way" and pick the phone/SMS method so we can relay it.
@@ -884,11 +1000,11 @@ async function loginOne(acc) {
       // genuine TOTP / one-time-code entry screen
       const codeInput = st.inputs.find((x) => x.includes("tel") || x.includes("code"));
       if (tok) { log("-> Using provided 2FA token"); const sel = codeInput ? `input[type=tel]` : `input[type=text]`; await setInput(sel, tok); await sleep(300); await clickNext(); await sleep(1500); continue; }
-      // auto-fill from 2fa.live if a secret is stored for this account
+      // auto-fill from local TOTP if a secret is stored for this account
       const auto = await fetch2FA(email);
       if (auto && codeInput) {
         const sel = codeInput ? `input[type=tel]` : `input[type=text]`;
-        log(`-> Auto-filled code from ${auto.source}: ${auto.code}`);
+        log(`-> Auto-filled code from ${auto.source}: ${maskCode(auto.code)}`);
         await setInput(sel, auto.code); await sleep(300); await clickNext(); await sleep(2000); continue;
       }
       log("-> No text match, continuing...."); continue;
@@ -949,19 +1065,53 @@ async function loginOne(acc) {
 }
 
 async function resetBrowser(proxy) {
-  // fresh chrome profile per account run: avoids the 8-account-per-session cap
-  sh(`pkill -f "[r]emote-debugging-port=9222" ; sleep 1 ; rm -rf ${PROFILE}`);
-  const args = [`--user-data-dir=${PROFILE}`, "--no-sandbox", "--no-first-run", "--disable-background-networking", "--window-size=1366,900", "--remote-debugging-port=9222"];
-  if (NO_VNC_FLAG) args.push("--headless=new", "--disable-gpu", "--disable-dev-shm-usage");
+  // P2-1 hard restart ONLY (off the per-account hot path): pkill + fresh profile.
+  // Hot path reuses the single browser; this runs on CDP-unreachable, proxy switch,
+  // or every BROWSER_RESTART_EVERY accounts (Google 8-account session cap).
+  sh(`pkill -u ${UID} -f "[r]emote-debugging-port=9222" ; sleep 1 ; rm -rf ${PROFILE}`);
+  const headless = NO_VNC_FLAG;
+  const args = baseChromeArgs(headless);
   if (proxy) {
     // route login Chrome through the proxy; keep localhost (CDP) unproxied
-    args.push(`--proxy-server=${proxy}`, "--proxy-bypass-list=<-loopback>");
+    args.splice(args.length - 1, 0, `--proxy-server=${proxy}`, "--proxy-bypass-list=<-loopback>");
     log(`-> Using proxy: ${proxy.replace(/\/\/[^@:]+:[^@]+@/, "//***@")} (creds hidden)`);
+    if (/\/\/[^/]*@/.test(proxy)) log("!! proxy credentials remain visible in Chrome cmdline via ps; prefer credential-less proxy or local forwarder");
   }
-  args.push("about:blank");
-  detach(CHROME, args);
+  detach(chromeBinary(headless), args);
+  CURRENT_PROXY = proxy || null;
+  ACCOUNTS_SINCE_RESTART = 0;
+  BROWSER_STARTED = true;
   for (let i = 0; i < 30; i++) { try { const t = await (await fetch(`${CDP}/json`)).json(); if (t.some((x) => x.type === "page")) break; } catch {} await sleep(1000); }
   await connectCDP();
+}
+
+async function cdpAlive() {
+  try {
+    const t = await (await fetch(`${CDP}/json`, { signal: AbortSignal.timeout(5000) })).json();
+    return Array.isArray(t);
+  } catch { return false; }
+}
+
+// P2-1 one browser per batch: reuse the single Chrome across accounts.
+// Per-account isolation = Network.clearBrowserCookies (loginOne) + fresh CDP target + P1-2 refreshWithCookies.
+// Returns "reused" or "restarted"; throws on CDP failure so the P1-3 retry helper can hard-restart.
+async function ensureBrowser(wantedProxy) {
+  const want = wantedProxy || null;
+  const needsPeriodic = BROWSER_STARTED && ACCOUNTS_SINCE_RESTART >= BROWSER_RESTART_EVERY;
+  const needsProxySwitch = BROWSER_STARTED && (want !== CURRENT_PROXY);
+  if (needsPeriodic) log(`-> Periodic browser restart every ${BROWSER_RESTART_EVERY} accounts (session cap)`);
+  if (needsProxySwitch) log("-> Proxy switch detected; hard-restarting browser");
+  if (BROWSER_STARTED && !needsPeriodic && !needsProxySwitch && await cdpAlive()) {
+    try {
+      try { await fetch(`${CDP}/json/new?about:blank`); } catch {}
+      await connectCDP();
+      return "reused";
+    } catch (e) {
+      log("-> Reuse target failed, falling through to hard restart: " + String(e && e.message || e).slice(0, 100));
+    }
+  }
+  await resetBrowser(want);
+  return "restarted";
 }
 
 async function isDone(acc) {
@@ -969,10 +1119,44 @@ async function isDone(acc) {
   if (existsSync(cfile)) {
     if (await cookieValid(acc.email)) return true;
     // dead/stale cookie: quarantine and retry the login
-    try { const bad = join(COOKIE_DIR, "invalid"); mkdirSync(bad, { recursive: true }); renameSync(cfile, join(bad, acc.email.replace(/[@.]/g, "_") + ".json")); log(`-> quarantined stale cookie ${acc.email}`); } catch {}
+    try { const bad = join(COOKIE_DIR, "invalid"); mkdirSync(bad, { recursive: true, mode: 0o700 }); renameSync(cfile, join(bad, acc.email.replace(/[@.]/g, "_") + ".json")); log(`-> quarantined stale cookie ${acc.email}`); } catch {}
     return false;
   }
   return false;
+}
+
+// P1-2 cookie-first refresh (no password use on this path).
+// Reuses cookieValid (fetch check / fast path) + CDP Network domain.
+async function refreshWithCookies(email) {
+  try {
+    const f = join(COOKIE_DIR, email.replace(/[@.]/g, "_") + ".json");
+    if (!existsSync(f)) return false;
+    let cookies;
+    try { cookies = JSON.parse(readFileSync(f, "utf8")); } catch { return false; }
+    if (!Array.isArray(cookies) || !cookies.length) return false;
+    // No live CDP yet (e.g. before first resetBrowser): fall back to fetch check.
+    if (typeof send === "undefined" || !send) return await cookieValid(email);
+    await send("Network.clearBrowserCookies").catch(() => {});
+    for (const c of cookies) {
+      if (!c || !c.name) continue;
+      try {
+        await send("Network.setCookie", {
+          name: c.name, value: String(c.value ?? ""),
+          url: "https://mail.google.com/",
+          domain: c.domain || ".google.com", path: c.path || "/",
+          secure: !!c.secure, httpOnly: !!c.httpOnly,
+        });
+      } catch {}
+    }
+    await send("Page.navigate", { url: "https://mail.google.com/mail/u/0/" });
+    await sleep(6000);
+    const st = await state().catch(() => null);
+    if (st && MAILRE.test(st.url || "")) {
+      if (await saveCookies(email)) return true;
+      return true;
+    }
+    return false;
+  } catch { return false; }
 }
 
 // Normalize proxy string for Chromium --proxy-server:
@@ -997,19 +1181,22 @@ function normalizeProxy(raw) {
 }
 
 async function main() {
-  // CLI: node run-batch.mjs [email password [2fa]] [--proxy <url|proxy.txt>]
+  // CLI: node run-batch.mjs [email [password [2fa]]] [--proxy <url|proxy.txt>] [--no-vnc] [--security-code]
+  // single-account password also via env RUNBATCH_PW (+RUNBATCH_TOK); proxy via env RUNBATCH_PROXY
   const argv = process.argv.slice(2);
-  // pull out --proxy <val> (and handle --proxy=val) and --no-vnc flag
-  let proxyArg = null;
+  // pull out --proxy <val> (and handle --proxy=val) and --no-vnc / --security-code flags
+  let proxyArg = process.env.RUNBATCH_PROXY || null;
+  let proxyFlagSeen = false;
   let noVnc = false;
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--proxy") { proxyArg = argv[i + 1] || ""; i++; }
-    else if (argv[i].startsWith("--proxy=")) proxyArg = argv[i].slice("--proxy=".length);
+    if (argv[i] === "--proxy") { proxyFlagSeen = true; proxyArg = argv[i + 1] || ""; i++; }
+    else if (argv[i].startsWith("--proxy=")) { proxyFlagSeen = true; proxyArg = argv[i].slice("--proxy=".length); }
     else if (argv[i] === "--no-vnc") noVnc = true;
+    else if (argv[i] === "--security-code") { /* opt-in: consumed here, active via USE_SECURITY_CODE global */ }
     else positional.push(argv[i]);
   }
-  if (argv.some((a) => a === "--proxy") && !proxyArg) { log("!! --proxy requires a value (URL or proxy.txt path)"); process.exit(1); }
+  if (proxyFlagSeen && !proxyArg) { log("!! --proxy requires a value (URL or proxy.txt path)"); process.exit(1); }
   // resolve proxy list: single URL or a file (one per line, # comments ignored)
   const PROXY_LIST = (() => {
     if (!proxyArg) return [];
@@ -1047,29 +1234,72 @@ async function main() {
   };
 
   let todo;
+  const envPw = process.env.RUNBATCH_PW || "";
+  const envTok = process.env.RUNBATCH_TOK || "";
+  const isSingleEnv = positional.length === 1 && !!envPw;
   if (positional.length >= 2) {
+    log("!! password on command line is visible via ps; prefer RUNBATCH_PW");
     todo = [{ email: positional[0], pw: positional[1], tok: positional[2] || "" }];
+  } else if (isSingleEnv) {
+    todo = [{ email: positional[0], pw: envPw, tok: envTok || "" }];
   } else {
+    if (envPw) log("!! RUNBATCH_PW is set but no single-account email given; ignoring env password");
     todo = accounts;
   }
+  try {
   for (let accnumber = 0; accnumber < todo.length; accnumber++) {
     const acc = todo[accnumber];
     if (!positional.length && await isDone(acc)) { log(`-> Skipping ${acc.email} (valid cookies).`); continue; }
-    if (!NO_VNC_FLAG) {
-  log("-> Setting up VNC and Chromium (fresh)....");
-} else {
-  log("-> Starting headless Chromium...");
-}
-    await resetBrowser(proxyFor());
+    const { email, pw, tok } = acc;
+    // P1-2 cookie-first refresh (password-free): try existing cookies before any browser work.
+    try {
+      const cfile = join(COOKIE_DIR, email.replace(/[@.]/g, "_") + ".json");
+      if (existsSync(cfile) && await refreshWithCookies(email)) {
+        log(`-> cookie refresh ok ${email}`);
+        try { await reconcileFailed(); } catch {}
+        log("-> Cleaning environment for next account....");
+        await sleep(8000); // FIXED cooldown between accounts
+        await sleep(2000);
+        continue;
+      }
+    } catch {}
+    // P2-1 one browser per batch: reuse single Chrome (isolation = clearBrowserCookies + fresh CDP target + P1-2 refresh).
+    // Hard restart only on CDP-unreachable (P1-3 retry), proxy switch, or every BROWSER_RESTART_EVERY accounts.
+    const wantedProxy = proxyFor();
+    let browserReady = false;
+    for (let attempt = 1; attempt <= 3 && !browserReady; attempt++) {
+      try {
+        const how = await ensureBrowser(wantedProxy);
+        log(how === "reused" ? `-> Reusing browser for ${email} (${ACCOUNTS_SINCE_RESTART}/${BROWSER_RESTART_EVERY} since restart)` : `-> Browser restarted for ${email}`);
+        browserReady = true;
+      } catch (e) {
+        log(`!! ensureBrowser failed (attempt ${attempt}/3): ${String(e && e.message || e).slice(0, 120)}`);
+        try { log("-> liveness free -m: " + sh("free -m | tail -5").replace(/\n/g, " | ")); } catch {}
+        try { log("-> liveness /dev/shm: " + sh("df -h /dev/shm 2>&1 | tail -3").replace(/\n/g, " | ")); } catch {}
+        try {
+          const t = await (await fetch(`${CDP}/json`, { signal: AbortSignal.timeout(5000) })).json();
+          log(`-> liveness CDP /json reachable: ${Array.isArray(t) ? t.length : 0} targets`);
+        } catch (ee) { log(`-> liveness CDP /json unreachable: ${String(ee && ee.message || ee).slice(0, 120)}`); }
+        if (attempt >= 3) {
+          markFailed(email, 'cdp-unreachable', pw, tok);
+          break;
+        }
+        await sleep(2000);
+      }
+    }
+    if (!browserReady) { continue; }
     try { await loginOne(acc); } catch (e) { log("ERR " + String(e)); }
+    ACCOUNTS_SINCE_RESTART++;
     log("-> Cleaning environment for next account....");
     await sleep(8000); // FIXED cooldown between accounts
     await sleep(2000);
   }
+  } finally {
   log("-> Batch finished.");
   cleanupList(positional.length >= 2);
   if (!NO_VNC_FLAG) { log("-> Clearing VNC stack...."); clearVnc(); }
   else { log("-> --no-vnc: skipping VNC cleanup"); }
+  }
   process.exit(0);
 }
 // remove from list.txt any account now in loggedmail.txt (success) or failed.txt (hard fail),
@@ -1084,13 +1314,13 @@ function cleanupList(singleShot) {
     const kept = readFileSync(LIST_FILE, "utf8").split("\n").map((l) => l.trim()).filter(Boolean)
       .filter((l) => !done.has(l.split("|")[0].trim().toLowerCase()));
     const removed = readFileSync(LIST_FILE, "utf8").split("\n").map((l) => l.trim()).filter(Boolean).length - kept.length;
-    writeFileSync(LIST_FILE, kept.join("\n") + (kept.length ? "\n" : ""));
+    writeFileSync(LIST_FILE, kept.join("\n") + (kept.length ? "\n" : ""), { mode: 0o600 });
     if (removed > 0) log(`-> Cleaned list.txt: removed ${removed} processed account(s). ${kept.length} remaining.`);
   } catch (e) { log("!! cleanupList: " + String(e.message || e)); }
 }
 function clearVnc() {
-  // [x]/[w] brackets stop pkill matching this script's own shell
-  try { sh("pkill -f '[x]11vnc -display :99' ; pkill -f '[w]ebsockify' ; pkill -f '[r]emote-debugging-port=9222' ; pkill -f '[X]vfb :99' ; pkill -f '[c]hromium-browser --no-sandbox' ; true"); } catch {}
+  for (const c of SPAWNED) { try { process.kill(c.pid, "SIGTERM"); } catch {} }
+  try { sh(`pkill -u ${UID} -f "[x]11vnc -display ${DISPLAY}" ; pkill -u ${UID} -f "[w]ebsockify 6080" ; pkill -u ${UID} -f "[r]emote-debugging-port=9222" ; pkill -u ${UID} -f "[X]vfb ${DISPLAY}" ; true`); } catch {}
 }
 process.on("SIGINT", () => { log("-> Interrupted; clearing VNC stack...."); clearVnc(); process.exit(130); });
 process.on("SIGTERM", () => { clearVnc(); process.exit(143); });

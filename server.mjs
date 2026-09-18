@@ -21,9 +21,34 @@ if (existsSync(join(ROOT, ".env")))
   }
 const PORT = +(ENV.PORT || 8790);
 const HOST = ENV.HOST || "127.0.0.1";
+const TRUST_PROXY = ENV.TRUST_PROXY === "1";
 const PASSWORD = ENV.PASSWORD || "changeme123";
-const SYNC_MINUTES = +(ENV.SYNC_MINUTES || 300); // fetch Gmail every 5h to keep sessions active
-const MONITOR_SECONDS = +(ENV.MONITOR_SECONDS || 30); // atom-feed new-mail poll
+if (!PASSWORD || PASSWORD === "changeme123") { console.error("[gmail-inbox] missing PASSWORD — set PASSWORD in .env and restart"); process.exit(1); }
+const SYNC_MINUTES = +(ENV.SYNC_MINUTES || 300); // legacy (keepalive replaces syncLoop)
+const MONITOR_SECONDS = +(ENV.MONITOR_SECONDS || 30); // SSE selected-account poll interval
+const REFRESH_STALE_MS = +(ENV.REFRESH_STALE_MS || 5 * 60 * 1000); // P2-4 freshness threshold
+const KEEPALIVE_HOURS = +(ENV.KEEPALIVE_HOURS || 12); // P2-4b keepalive interval (0 disables)
+
+// ---- spam sync (all mail = inbox + spam): Playwright full-UI scrape via python child ----
+// spam gate: enabled only when SPAM_SYNC=1 (default OFF)
+import { spawn as _spawn } from "node:child_process";
+const SPAM_ENABLED = ENV.SPAM_SYNC === "1";
+const SPAM_PYTHON = ENV.SPAM_PYTHON || "/root/temp/token-harbor/.venv/bin/python3";
+const SPAM_SYNC_MINUTES = +(ENV.SPAM_SYNC_MINUTES || 60);
+let _spamRunning = false;
+function spamSync(emails = []) {
+  if (_spamRunning) { console.log("[gmail-inbox] spam sync already running — skip"); return; }
+  if (!existsSync(join(ROOT, "tools", "spam_sync.py"))) { console.log("[gmail-inbox] tools/spam_sync.py missing — skip"); return; }
+  _spamRunning = true;
+  const args = [join(ROOT, "tools", "spam_sync.py"), ...emails];
+  const child = _spawn(SPAM_PYTHON, args, {
+    env: { ...process.env, DISPLAY: ENV.SPAM_DISPLAY || ":99" },
+    stdio: "ignore", detached: false,
+  });
+  child.on("exit", (code) => { _spamRunning = false; console.log(`[gmail-inbox] spam sync done (rc=${code})`); });
+  child.on("error", (e) => { _spamRunning = false; console.log(`[gmail-inbox] spam sync spawn fail: ${e.message}`); });
+  console.log(`[gmail-inbox] spam sync started (${emails.length ? emails.join(",") : "all accounts"})`);
+}
 let API_KEY = ENV.API_KEY || null; // set below from local DB (auto-generated + persisted)
 let PUBLIC_TOKEN = ENV.PUBLIC_TOKEN || null;
 console.log("  no secrets in logs: credentials live in .env / local DB / cookies/");
@@ -193,8 +218,11 @@ async function fetchInboxPage(cookies, q, cf, email) {
 }
 // Gmail atom feed — returns up to ~20 recent INBOX items with subject/sender/date.
 // Far more than the /h/ view's 5-cap, and cheap. Entries have no body_html (fetched on open).
-async function fetchAtom(cookies, cf, email) {
-  const url = "https://mail.google.com/mail/u/0/feed/atom";
+async function fetchAtom(cookies, cf, email, label = "") {
+  // label "" = inbox; "spam" = [Gmail]/Spam (via feed/atom/<label>)
+  const url = label
+    ? `https://mail.google.com/mail/u/0/feed/atom/${encodeURIComponent(label)}`
+    : "https://mail.google.com/mail/u/0/feed/atom";
   const { status, body, jar } = await fetchWithJar(cookies, url);
   try {
     const changed = cookies.filter((c) => jar.find((j) => j.name === c.name && j.value !== c.value));
@@ -252,15 +280,19 @@ async function fetchInbox(email, q = "in:anywhere newer_than:20d") {
   // Dedupe by thread/msg id — atom gives real subjects/senders, /h/ adds bodies + coverage.
   const all = [];
   const seen = new Set();
-  try {
-    const atom = await fetchAtom(cookies, cf, email);
-    for (const it of atom) {
-      const k = it.thread_id || it.msg_id;
-      if (seen.has(k)) continue;
-      seen.add(k); all.push(it);
+  // atom: inbox + spam (in:anywhere /h/ misses spam — TH verify emails land there)
+  for (const label of ["", "spam"]) {
+    try {
+      const atom = await fetchAtom(cookies, cf, email, label);
+      for (const it of atom) {
+        const k = it.thread_id || it.msg_id;
+        if (seen.has(k)) continue;
+        seen.add(k); all.push(it);
+      }
+    } catch (e) {
+      if (String(e.message || e) === "session expired") throw e;
+      if (label === "spam") console.log(`[gmail-inbox] spam atom skip for ${email}: ${e.message || e}`);
     }
-  } catch (e) {
-    if (String(e.message || e) === "session expired") throw e;
   }
   // Gmail /h/ returns at most ~5 conversations per query, regardless of pagination.
   // To capture up to `target` conversations, recursively split the [start,end) window
@@ -299,6 +331,34 @@ async function fetchInbox(email, q = "in:anywhere newer_than:20d") {
 
   // start with the full past-20-day window; recursion narrows as needed
   await walk(now - 20 * DAY, now, 0);
+  // spam pass: in:anywhere misses spam — run the same window with in:spam
+  if (seen.size < target) {
+    async function walkSpam(from, to, depth) {
+      if (seen.size >= target) return;
+      if (to - from < MIN_DAY * DAY || depth > 5) return;
+      let page;
+      try {
+        const qw = `in:spam after:${Math.floor(from / 1000)} before:${Math.floor(to / 1000)}`;
+        page = await fetchInboxPage(cookies, qw, cf, email);
+      } catch (e) {
+        if (String(e.message || e) === "session expired") throw e;
+        return;
+      }
+      let added = 0;
+      for (const it of page) {
+        const k = (it.thread_id || it.msg_id) + ":spam";
+        if (seen.has(k)) continue;
+        seen.add(k); it.label = "spam"; all.push(it); added++;
+      }
+      if (added === 0) return;
+      if (page.length >= 4 && seen.size < target) {
+        const mid = from + Math.floor((to - from) / 2);
+        await walkSpam(mid, to, depth + 1);
+        await walkSpam(from, mid, depth + 1);
+      }
+    }
+    await walkSpam(now - 20 * DAY, now, 0);
+  }
   return all;
 }
 
@@ -406,6 +466,18 @@ function normTid(t) {
 }
 function normMid(m) { return String(m || "").replace(/^msg-f:/, "").split(":")[0]; }
 
+// P2-4 stale-while-revalidate: fire-and-forget refresh when cache older than threshold
+function maybeRefresh(email) {
+  if (!email) return;
+  try {
+    const acct = GET_ACCOUNT.get(email);
+    if (!acct) return;
+    if (Date.now() - (acct.last_sync || 0) > REFRESH_STALE_MS) syncAccount(email).catch(() => {});
+  } catch {}
+}
+function maybeRefreshAll() {
+  try { for (const a of LIST_ACCOUNTS.all()) maybeRefresh(a.email); } catch {}
+}
 async function syncAccount(email) {
   try {
     const items = await fetchInbox(email);
@@ -430,7 +502,7 @@ async function syncAccount(email) {
   }
 }
 
-// ---- monitor: atom feed new-mail detection + SSE ----
+// ---- monitor: atom feed new-mail detection (lightweight HTTP fullcount probe) ----
 const lastAtom = new Map();
 let SELECTED = null; // account receiving realtime new-mail checks (set via /api/select)
 async function checkMail(email) {
@@ -448,8 +520,15 @@ async function checkMail(email) {
       return;
     }
     const full = (x.match(/<fullcount>(\d+)<\/fullcount>/) || [])[1] || "0";
-    // always sync — unread count unreliable (emails get marked as read)
-    syncAccount(email).catch(() => {});
+    // full-sync ONLY when fullcount changed or cache older than 24h
+    const prev = lastAtom.get(email);
+    const lastSync = (GET_ACCOUNT.get(email) || {}).last_sync || 0;
+    const tooOld = Date.now() - lastSync > 24 * 3600 * 1000;
+    if (prev === undefined || prev !== full || tooOld) {
+      lastAtom.set(email, full);
+      console.log(`[gmail-inbox] atom ${email}: fullcount ${prev ?? "?"}→${full}${tooOld ? " (stale >24h)" : ""} — syncing`);
+      syncAccount(email).catch(() => {});
+    }
   } catch (e) {
     // log error and trigger re-sync on failure (stale cookies, network error, etc.)
     console.log(`[gmail-inbox] atom ${email} error: ${e.message || e} — re-syncing...`);
@@ -458,33 +537,58 @@ async function checkMail(email) {
     lastAtom.delete(email);
   }
 }
-async function monitorLoop() {
-  // realtime new-mail check ONLY for the currently selected account
-  const accts = LIST_ACCOUNTS.all();
-  if (SELECTED && accts.some((a) => a.email === SELECTED)) { await checkMail(SELECTED); return; }
-  for (const a of accts) await checkMail(a.email);
-}
 
-// ---- sync loop + SSE ----
+// P2-4b keepalive: ONE interval (env KEEPALIVE_HOURS, default 12, 0 disables).
+// Staggered per-account atom fullcount probes, all HTTP; full syncAccount only on
+// fullcount change or last_sync older than 24h (see checkMail). No browser, no spam_sync.
+async function keepalive() {
+  const accts = LIST_ACCOUNTS.all();
+  console.log(`[gmail-inbox] keepalive run (${accts.length} accounts)`);
+  for (const a of accts) {
+    try { await checkMail(a.email); } catch {}
+    await new Promise((r) => setTimeout(r, 2000 + Math.random() * 3000)); // stagger + jitter
+  }
+}
+if (KEEPALIVE_HOURS > 0) setInterval(keepalive, KEEPALIVE_HOURS * 3600 * 1000);
+else console.log("[gmail-inbox] keepalive disabled (KEEPALIVE_HOURS=0)");
+
+// ---- SSE + selected-account polling (P2-5: poll ONLY while viewers exist) ----
 const sseClients = new Set();
 function broadcast(type, data) {
   const s = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const c of sseClients) { try { c.write(s); } catch {} }
 }
-let syncing = false;
-async function syncLoop() {
-  if (syncing) return; syncing = true;
-  try {
-    const accts = LIST_ACCOUNTS.all();
-    for (const a of accts) {
-      const n = await syncAccount(a.email).catch(() => 0);
-      if (n) broadcast("update", { email: a.email, count: n, ts: Date.now() });
-    }
-  } finally { syncing = false; }
+let selectedTimer = null; // SELECTED IdleTimer: cleared when last viewer leaves, SELECTED value kept
+function stopSelectedPoll() {
+  if (selectedTimer) { clearInterval(selectedTimer); selectedTimer = null; }
 }
-setInterval(syncLoop, SYNC_MINUTES * 60 * 1000);
-setInterval(monitorLoop, MONITOR_SECONDS * 1000);
-discoverAccounts(); syncLoop(); monitorLoop();
+function startSelectedPoll() {
+  if (selectedTimer || !SELECTED) return;
+  selectedTimer = setInterval(() => {
+    if (sseClients.size === 0 || !SELECTED) { stopSelectedPoll(); return; }
+    checkMail(SELECTED).catch(() => {});
+  }, MONITOR_SECONDS * 1000);
+}
+function sseAttach(res, req) {
+  sseClients.add(res);
+  const first = sseClients.size === 1;
+  req.on("close", () => {
+    sseClients.delete(res);
+    if (sseClients.size === 0) stopSelectedPoll();
+  });
+  // fetch-latest for SELECTED when the first viewer connects
+  if (first && SELECTED) { checkMail(SELECTED).catch(() => {}); startSelectedPoll(); }
+}
+function selectAccount(email) {
+  SELECTED = email || null;
+  // /api/select change while clients exist: fetch-latest + (re)start polling
+  if (sseClients.size > 0) {
+    stopSelectedPoll();
+    if (SELECTED) { checkMail(SELECTED).catch(() => {}); startSelectedPoll(); }
+  }
+  return SELECTED;
+}
+discoverAccounts();
 // periodic autopurge: drop threads/messages older than 20 days from cache
 function purgeOld() {
   const cutoff = Date.now() - 20 * 864e5;
@@ -512,30 +616,97 @@ setTimeout(async () => {
 setInterval(() => { discoverAccounts(); broadcast("update", { ts: Date.now() }); }, 30 * 1000);
 
 // ---- http ----
-const json = (res, code, obj) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(obj)); };
+const SEC_HDR = { "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff" };
+const json = (res, code, obj, extra) => { res.writeHead(code, { "Content-Type": "application/json", ...SEC_HDR, ...(extra || {}) }); res.end(JSON.stringify(obj)); };
 const sess = new Map(); // token -> {exp}  (legacy: replaced by signed stateless cookies)
 const RATE = new Map(); // ip -> {fails[], blockedUntil}
-// restart-proof sessions: stateless HMAC-signed cookie (secret persisted in DB)
-function signSessionToken() {
-  const exp = (Date.now() + 7 * 864e5).toString(16);
-  const sig = crypto.createHmac("sha256", SESSION_SECRET).update(exp).digest("base64url");
-  return `${exp}.${sig}`;
+const REFRESH_LAST = new Map(); // email -> last manual refresh ms
+function safeEq(a, b) {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  const ab = Buffer.from(a), bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  try { return crypto.timingSafeEqual(ab, bb); } catch { return false; }
 }
-// server-side session registry: track every issued web session (token hash) so the
-// "sessions" manager can list active sessions across browsers/devices and revoke them.
+function sessHash(tok) { return crypto.createHash("sha256").update(String(tok)).digest("hex"); }
+function parseSess(tok) {
+  if (typeof tok !== "string") return null;
+  const parts = tok.split(".");
+  if (parts.length === 2) {
+    const [expHex, sig] = parts;
+    if (!/^[0-9a-f]+$/i.test(expHex) || !sig) return null;
+    const expMs = parseInt(expHex, 16);
+    if (!Number.isFinite(expMs)) return null;
+    return { sid: null, expHex, sig, expMs };
+  }
+  if (parts.length === 3) {
+    const [sid, expHex, sig] = parts;
+    if (!/^[0-9a-f]{32}$/i.test(sid)) return null;
+    if (!/^[0-9a-f]+$/i.test(expHex) || !sig) return null;
+    const expMs = parseInt(expHex, 16);
+    if (!Number.isFinite(expMs)) return null;
+    return { sid, expHex, sig, expMs };
+  }
+  return null;
+}
+function sessWant(tok, p) {
+  p = p || parseSess(tok);
+  if (!p) return null;
+  const data = p.sid ? `${p.sid}.${p.expHex}` : p.expHex;
+  return crypto.createHmac("sha256", SESSION_SECRET).update(data).digest("base64url");
+}
+function sessSigOk(tok) {
+  const p = parseSess(tok);
+  if (!p) return false;
+  const want = sessWant(tok, p);
+  if (!want || p.sig.length !== want.length) return false;
+  try { return crypto.timingSafeEqual(Buffer.from(p.sig), Buffer.from(want)); } catch { return false; }
+}
+function getSessToken(req) {
+  const m = (req.headers.cookie || "").match(/(?:__Host-)?gsess=([A-Za-z0-9_.-]+)/);
+  return m ? m[1] : null;
+}
+function isHttps(req) {
+  const p = ((req.headers["x-forwarded-proto"] || "").split(",")[0] || "").trim().toLowerCase();
+  if (p === "https") return true;
+  if (p === "http") return false;
+  try { if (req.socket && req.socket.encrypted) return true; } catch {}
+  return false;
+}
+function sessCookieName(req) { return isHttps(req) ? "__Host-gsess" : "gsess"; }
+function sessSetCookie(req, tok) {
+  const n = sessCookieName(req);
+  const sec = isHttps(req) ? "; Secure" : "";
+  return `${n}=${tok}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800${sec}`;
+}
+// restart-proof sessions: stateless HMAC-signed cookie (secret persisted in DB)
+// new format: sid.exp.sig (sid = 16 random bytes hex); legacy exp.sig still accepted
+function signSessionToken() {
+  const sid = crypto.randomBytes(16).toString("hex");
+  const exp = (Date.now() + 7 * 864e5).toString(16);
+  const sig = crypto.createHmac("sha256", SESSION_SECRET).update(`${sid}.${exp}`).digest("base64url");
+  return `${sid}.${exp}.${sig}`;
+}
+// server-side session registry: store only SHA-256 hash so DB theft does not yield cookies
 function recordSession(tok, ip) {
-  const expHex = tok.slice(0, tok.indexOf("."));
-  const expMs = parseInt(expHex, 16);
-  try { db.prepare("INSERT INTO web_sessions(token_hash, created, expiry, ip, last_seen) VALUES(?,?,?,?,?)").run(tok, Date.now(), expMs, ip || "", Date.now()); } catch {}
+  const p = parseSess(tok);
+  if (!p) return;
+  try { db.prepare("INSERT INTO web_sessions(token_hash, created, expiry, ip, last_seen) VALUES(?,?,?,?,?)").run(sessHash(tok), Date.now(), p.expMs, ip || "", Date.now()); } catch {}
 }
 function touchSession(tok) {
-  try { db.prepare("UPDATE web_sessions SET last_seen=? WHERE token_hash=?").run(Date.now(), tok); } catch {}
+  const h = sessHash(tok);
+  try {
+    const r = db.prepare("UPDATE web_sessions SET last_seen=? WHERE token_hash=?").run(Date.now(), h);
+    if (r.changes === 0) {
+      const leg = db.prepare("SELECT id FROM web_sessions WHERE token_hash=?").get(tok);
+      if (leg) db.prepare("UPDATE web_sessions SET token_hash=?, last_seen=? WHERE id=?").run(h, Date.now(), leg.id);
+    }
+  } catch {}
 }
 function listSessions() {
   return db.prepare("SELECT id, token_hash, created, expiry, ip, last_seen FROM web_sessions ORDER BY created DESC").all();
 }
 function revokeSession(tok) {
-  try { db.prepare("DELETE FROM web_sessions WHERE token_hash=?").run(tok); return true; } catch { return false; }
+  try { db.prepare("DELETE FROM web_sessions WHERE token_hash=? OR token_hash=?").run(sessHash(tok), tok); return true; } catch { return false; }
 }
 function revokeSessionById(id) {
   try { db.prepare("DELETE FROM web_sessions WHERE id=?").run(id); return true; } catch { return false; }
@@ -545,19 +716,34 @@ function pruneSessions() {
 }
 function verifySessionToken(tok) {
   if (typeof tok !== "string") return false;
-  const i = tok.indexOf(".");
-  if (i < 1) return false;
-  const expHex = tok.slice(0, i), sig = tok.slice(i + 1);
-  const want = crypto.createHmac("sha256", SESSION_SECRET).update(expHex).digest("base64url");
-  if (sig.length !== want.length) return false;
-  const ok = crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(want));
+  const p = parseSess(tok);
+  if (!p) return false;
+  const want = sessWant(tok, p);
+  if (!want || p.sig.length !== want.length) return false;
+  let ok = false;
+  try { ok = crypto.timingSafeEqual(Buffer.from(p.sig), Buffer.from(want)); } catch { return false; }
   if (!ok) return false;
-  const expMs = parseInt(expHex, 16);
-  return Number.isFinite(expMs) && expMs > Date.now();
+  if (!(p.expMs > Date.now())) return false;
+  try {
+    const h = sessHash(tok);
+    const row = db.prepare("SELECT id, expiry FROM web_sessions WHERE token_hash=?").get(h);
+    if (row) {
+      if (row.expiry && row.expiry < Date.now()) return false;
+      return true;
+    }
+    const leg = db.prepare("SELECT id, expiry FROM web_sessions WHERE token_hash=?").get(tok);
+    if (leg) {
+      if (leg.expiry && leg.expiry < Date.now()) return false;
+      return true;
+    }
+  } catch { return false; }
+  return false;
 }
+function okAuth(ip) { try { RATE.delete(ip); } catch {} }
 function isBlocked(ip) { const r = RATE.get(ip); return r && r.blockedUntil > Date.now() ? Math.ceil((r.blockedUntil - Date.now()) / 1000) : 0; }
 function failAuth(ip) {
   const now = Date.now();
+  if (!RATE.has(ip) && RATE.size >= 10000) { const k = RATE.keys().next().value; try { RATE.delete(k); } catch {} }
   let r = RATE.get(ip) || (RATE.set(ip, { fails: [], blockedUntil: 0 }), RATE.get(ip));
   r.fails = r.fails.filter((t) => now - t < 60000);
   r.fails.push(now);
@@ -565,36 +751,68 @@ function failAuth(ip) {
   return 0;
 }
 function authPage(req, res) {
-  const c = (req.headers.cookie || "").match(/gsess=([A-Za-z0-9_.-]+)/);
-  if (!c || !verifySessionToken(c[1])) return false;
-  // register this session on first sight (covers cookies issued before tracking existed)
-  try {
-    const row = db.prepare("SELECT id FROM web_sessions WHERE token_hash=?").get(c[1]);
-    if (!row) {
-      const expHex = c[1].slice(0, c[1].indexOf("."));
-      const expMs = parseInt(expHex, 16);
-      db.prepare("INSERT OR IGNORE INTO web_sessions(token_hash, created, expiry, ip, last_seen) VALUES(?,?,?,?,?)")
-        .run(c[1], expMs - 7 * 864e5, expMs, (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.socket.remoteAddress || "", Date.now());
-    } else {
-      db.prepare("UPDATE web_sessions SET last_seen=? WHERE token_hash=?").run(Date.now(), c[1]);
-    }
-  } catch {}
+  const tok = getSessToken(req);
+  if (!tok) return false;
+  pruneSessions();
+  if (!verifySessionToken(tok)) {
+    try { if (sessSigOk(tok)) console.log("[gmail-inbox] rejected untracked session (revoked or pre-tracking)"); } catch {}
+    return false;
+  }
+  touchSession(tok);
   return true;
 }
 function csrf() { return crypto.randomBytes(16).toString("hex"); }
+function csrfOriginOk(req) {
+  const o = req.headers["origin"] || req.headers["referer"];
+  if (!o) return false;
+  try {
+    const oh = new URL(o, `http://${req.headers.host}`).host;
+    const h = (req.headers.host || "").split(",")[0].trim();
+    if (!oh || !h) return false;
+    return safeEq(oh.toLowerCase(), h.toLowerCase());
+  } catch { return false; }
+}
+function authedViaKey(req) {
+  const a = req.headers["authorization"] || "";
+  const k = req.headers["x-api-key"];
+  return safeEq(a, API_KEY) || safeEq(k, API_KEY);
+}
+function validHost(h) {
+  if (typeof h !== "string") return null;
+  const v = h.split(",")[0].trim();
+  if (!v || v.length > 253) return null;
+  if (/[\s\/]/.test(v)) return null;
+  if (!/^[A-Za-z0-9.-]+(?::\d+)?$/.test(v)) return null;
+  return v;
+}
+function clientIp(req) {
+  if (TRUST_PROXY) {
+    const xff = (req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+    if (xff) return xff;
+  }
+  try { return req.socket.remoteAddress || "?"; } catch { return "?"; }
+}
+function escLike(s) { return String(s).replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_"); }
 
 // ---- cloud-mail compatible API helpers ----
 const MAX_BODY = 1_000_000; // 1MB request body cap
 function readBody(req, strict) {
   return new Promise((resolve) => {
-    let b = "", too = false;
-    req.on("data", (d) => { b += d; if (b.length > MAX_BODY) too = true; });
-    req.on("end", () => {
-      if (too) return resolve({ __too: true });
-      if (!b) return resolve(strict ? { __bad: true } : {});
-      try { const o = JSON.parse(b); resolve(o); }
-      catch { resolve({ __bad: true }); }
+    let b = "", too = false, done = false;
+    const fin = (v) => { if (!done) { done = true; resolve(v); } };
+    req.on("data", (d) => {
+      if (too) return;
+      b += d;
+      if (b.length > MAX_BODY) { too = true; try { req.destroy(); } catch {} }
     });
+    req.on("end", () => {
+      if (too) return fin({ __too: true });
+      if (!b) return fin(strict ? { __bad: true } : {});
+      try { const o = JSON.parse(b); fin(o); }
+      catch { fin({ __bad: true }); }
+    });
+    req.on("close", () => { if (too) fin({ __too: true }); });
+    req.on("error", () => { if (too) fin({ __too: true }); });
   });
 }
 async function cloudBody(req, res) {
@@ -623,16 +841,21 @@ function msgRow(r) {
   };
 }
 function searchMessages(params, extraEmail) {
+  params = params || {};
   const conds = [], vals = [];
-  const like = (field, v) => { if (v) { conds.push(`${field} LIKE ?`); vals.push(`%${v}%`); } };
+  const like = (field, v) => { if (v) { conds.push(`${field} LIKE ? ESCAPE '\\'`); vals.push(`%${escLike(v)}%`); } };
   like("email", extraEmail || params.toEmail);
   like("sender", params.sendEmail);
   like("sender_name", params.sendName);
   like("subject", params.subject);
   if (extraEmail) { } // covered by like above
-  const order = params.timeSort === "asc" ? "ts ASC" : "ts DESC";
-  const size = Math.min(+(params.size || 20), 200);
-  const num = Math.max(+(params.num || 1), 1);
+  const order = params.timeSort === "asc" ? "ts ASC" : params.timeSort === "desc" ? "ts DESC" : "ts DESC";
+  let size = parseInt(params.size, 10);
+  if (!Number.isFinite(size)) size = 20;
+  size = Math.min(Math.max(size, 1), 100);
+  let num = parseInt(params.num, 10);
+  if (!Number.isFinite(num)) num = 1;
+  num = Math.max(num, 1);
   const offset = (num - 1) * size;
   const sql = `SELECT rowid,* FROM messages ${conds.length ? "WHERE " + conds.join(" AND ") : ""} ORDER BY ${order} LIMIT ? OFFSET ?`;
   const rows = db.prepare(sql).all(...vals, size, offset);
@@ -659,15 +882,16 @@ const DOCS = {
 };
 // dynamic base URL: honors X-Forwarded-Proto/Host (behind tunnel/proxy) else the request host
 function requestBaseUrl(req) {
-  const proto = (req.headers["x-forwarded-proto"] || "").split(",")[0].trim() || "http";
-  const host = (req.headers["x-forwarded-host"] || req.headers["host"] || "").trim();
+  let proto = (req.headers["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase();
+  if (proto !== "http" && proto !== "https") proto = "http";
+  const host = validHost(req.headers["x-forwarded-host"]) || validHost(req.headers["host"]) || "";
   return host ? `${proto}://${host}` : "";
 }
 async function cloudApi(p, req, res, url) {
-  const cip = (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.socket.remoteAddress || "?";
+  const cip = clientIp(req);
   const auth = req.headers["authorization"] || "";
-  const authed = auth === API_KEY || req.headers["x-api-key"] === API_KEY || authPage(req, res);
-  const pubOk = auth === PUBLIC_TOKEN;
+  const authed = safeEq(auth, API_KEY) || safeEq(req.headers["x-api-key"], API_KEY) || authPage(req, res);
+  const pubOk = safeEq(auth, PUBLIC_TOKEN);
   const baseUrl = requestBaseUrl(req);
   const OPENAPI = {
     openapi: "3.0.3",
@@ -709,33 +933,35 @@ async function cloudApi(p, req, res, url) {
     },
   };
   if (p === "/api/docs") {
-    if (!authed) { json(res, 401, cloudFail("authExpired", 401)); return true; }
-    json(res, 200, DOCS); return true;
+    if (!authed) { failAuth(cip); json(res, 401, cloudFail("authExpired", 401)); return true; }
+    okAuth(cip); json(res, 200, DOCS); return true;
   }
   if (p === "/api/openapi") {
-    if (!authed) { json(res, 401, cloudFail("authExpired", 401)); return true; }
-    json(res, 200, OPENAPI); return true;
+    if (!authed) { failAuth(cip); json(res, 401, cloudFail("authExpired", 401)); return true; }
+    okAuth(cip); json(res, 200, OPENAPI); return true;
   }
   if (p === "/api/login" && req.method === "POST") {
     const b = await cloudBody(req, res); if (!b) return true;
-    if (b.password === PASSWORD) { json(res, 200, cloudOk({ token: API_KEY })); }
+    if (safeEq(b.password, PASSWORD)) { okAuth(cip); json(res, 200, cloudOk({ token: API_KEY })); }
     else { failAuth(cip); json(res, 401, cloudFail("bad password", 401)); }
     return true;
   }
   if (p === "/api/register" && req.method === "POST") { json(res, 501, cloudFail("not supported", 501)); return true; }
   if (p.startsWith("/api/public/")) {
-    if (!pubOk) { json(res, 401, cloudFail("publicTokenFail", 401)); return true; }
+    if (!pubOk) { failAuth(cip); json(res, 401, cloudFail("publicTokenFail", 401)); return true; }
+    okAuth(cip);
     if (p === "/api/public/genToken" && req.method === "POST") { json(res, 200, cloudOk({ token: PUBLIC_TOKEN })); return true; }
-    if (p === "/api/public/emailList" && req.method === "POST") { const b = await cloudBody(req, res); if (!b) return true; json(res, 200, cloudOk(searchMessages(b))); return true; }
+    if (p === "/api/public/emailList" && req.method === "POST") { const b = await cloudBody(req, res); if (!b) return true; if (b.toEmail || b.accountEmail) maybeRefresh(b.toEmail || b.accountEmail); json(res, 200, cloudOk(searchMessages(b))); return true; }
     json(res, 404, cloudFail("not found", 404)); return true;
   }
   if (p.startsWith("/api/email/") || p.startsWith("/api/account/") || p.startsWith("/api/allEmail/")) {
-    if (!authed) { json(res, 401, cloudFail("authExpired", 401)); return true; }
-    if (p === "/api/email/list" && req.method === "POST") { const b = await cloudBody(req, res); if (!b) return true; json(res, 200, cloudOk(searchMessages(b, b.accountEmail))); return true; }
+    if (!authed) { failAuth(cip); json(res, 401, cloudFail("authExpired", 401)); return true; }
+    okAuth(cip);
+    if (p === "/api/email/list" && req.method === "POST") { const b = await cloudBody(req, res); if (!b) return true; if (b.accountEmail) maybeRefresh(b.accountEmail); json(res, 200, cloudOk(searchMessages(b, b.accountEmail))); return true; }
     if (p === "/api/email/latest" && req.method === "POST") { const b = await cloudBody(req, res); if (!b) return true; json(res, 200, cloudOk(searchMessages({ ...b, num: 1, size: b.size || 20 }))); return true; }
     if (p === "/api/email/read" && req.method === "POST") { const b = await cloudBody(req, res); if (!b) return true; json(res, 200, cloudOk(null)); return true; }
     if (p === "/api/email/delete" && req.method === "POST") { const b = await cloudBody(req, res); if (!b) return true; json(res, 501, cloudFail("not supported", 501)); return true; }
-    if (p === "/api/allEmail/list" && req.method === "POST") { const b = await cloudBody(req, res); if (!b) return true; json(res, 200, cloudOk(searchMessages(b))); return true; }
+    if (p === "/api/allEmail/list" && req.method === "POST") { const b = await cloudBody(req, res); if (!b) return true; if (b.toEmail || b.accountEmail) maybeRefresh(b.toEmail || b.accountEmail); else maybeRefreshAll(); json(res, 200, cloudOk(searchMessages(b))); return true; }
     json(res, 404, cloudFail("not found", 404)); return true;
   }
   return false;
@@ -747,30 +973,33 @@ const server = http.createServer(async (req, res) => {
   const p = url.pathname;
 
   // ---- brute-force guard: /login and /api/login ----
-  const ip = (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.socket.remoteAddress || "?";
+  const ip = clientIp(req);
   const blocked = isBlocked(ip);
   if (blocked) return json(res, 429, { error: "too many attempts; blocked", retryAfter: blocked });
   const cl = parseInt(req.headers["content-length"] || "0", 10);
   if (cl > MAX_BODY) return json(res, 413, { error: "payload too large" });
 
   if (p === "/api/sse") {
-    if (!authPage(req, res)) return json(res, 401, { error: "auth" });
-    res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
-    sseClients.add(res); req.on("close", () => sseClients.delete(res));
+    if (!authPage(req, res)) { failAuth(ip); return json(res, 401, { error: "auth" }); }
+    okAuth(ip);
+    res.writeHead(200, { ...SEC_HDR, "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+    sseAttach(res, req);
     res.write("retry: 10000\n\n");
     return;
   }
 
   if (p === "/login" && req.method === "POST") {
-    let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => {
-      try { const { password } = JSON.parse(b); if (password === PASSWORD) { const t = signSessionToken(); recordSession(t, ip); res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": `gsess=${t}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800` }); res.end(JSON.stringify({ apiKey: API_KEY, publicToken: PUBLIC_TOKEN })); } else { failAuth(ip); json(res, 401, { error: "bad password" }); } } catch { failAuth(ip); json(res, 400, { error: "json" }); }
-    });
+    const b = await readBody(req, true);
+    if (b.__too) return json(res, 413, { error: "payload too large" });
+    if (b.__bad) { failAuth(ip); return json(res, 400, { error: "json" }); }
+    if (safeEq(b.password, PASSWORD)) { const t = signSessionToken(); recordSession(t, ip); okAuth(ip); res.writeHead(200, { ...SEC_HDR, "Content-Type": "application/json", "Cache-Control": "no-store", "Set-Cookie": sessSetCookie(req, t) }); res.end(JSON.stringify({ apiKey: API_KEY, publicToken: PUBLIC_TOKEN })); }
+    else { failAuth(ip); json(res, 401, { error: "bad password" }); }
     return;
   }
 
     // docs: same login gate as the app — one password unlocks mail AND docs
   if (p === "/docs" && req.method === "GET") {
-    if (!authPage(req, res)) return res.writeHead(302, { Location: "/login.html?next=/docs" }).end();
+    if (!authPage(req, res)) return res.writeHead(302, { ...SEC_HDR, Location: "/login.html?next=/docs" }).end();
     const tpl = readFileSync(join(ROOT, "public", "docs.html"), "utf8");
     // inject real secrets into a JS global (NOT the visible HTML) so they can be
     // revealed on demand and rotated, but never appear in a screenshot/page view.
@@ -781,7 +1010,7 @@ const server = http.createServer(async (req, res) => {
       .replaceAll("__PUBLIC_TOKEN__", "••••••••••••••••")
       .replaceAll("__BASE_URL__", baseUrl)
       .replace("<!--CREDS-->", `<script>window.__CREDS__=${creds};</script>`);
-    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "X-Content-Type-Options": "nosniff" });
+    res.writeHead(200, { ...SEC_HDR, "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
     res.end(html);
     return;
   }
@@ -792,38 +1021,38 @@ const server = http.createServer(async (req, res) => {
     if (b.password === PASSWORD) {
       const t = signSessionToken();
       recordSession(t, ip);
-      res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": `gsess=${t}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800` });
+      okAuth(ip);
+      res.writeHead(200, { ...SEC_HDR, "Content-Type": "application/json", "Cache-Control": "no-store", "Set-Cookie": sessSetCookie(req, t) });
       res.end(JSON.stringify({ ok: true }));
     } else { failAuth(ip); json(res, 401, { error: "bad password" }); }
     return;
   }
   if (p.startsWith("/api/")) {
     if (await cloudApi(p, req, res, url)) return;
-    if (req.headers["x-api-key"] !== API_KEY && !authPage(req, res)) return json(res, 401, { error: "auth" });
+    if (req.headers["x-api-key"] !== API_KEY && !authPage(req, res)) { failAuth(ip); return json(res, 401, { error: "auth" }); }
+    okAuth(ip);
     const parts = p.split("/").filter(Boolean).slice(1); // accounts, email, messages, id
     // web session info: expiry from the signed gsess token
     if (p === "/api/session" && req.method === "GET") {
-      const c = (req.headers.cookie || "").match(/gsess=([A-Za-z0-9_.-]+)/);
-      let expiry = null, valid = false, cur = null;
-      if (c) {
-        const i = c[1].indexOf(".");
-        if (i > 0) {
-          const expMs = parseInt(c[1].slice(0, i), 16);
-          if (Number.isFinite(expMs)) { expiry = expMs; valid = expMs > Date.now(); }
-        }
-        cur = c[1];
-        touchSession(c[1]);
+      const cur = getSessToken(req);
+      let expiry = null, valid = false, token_fp = null;
+      if (cur) {
+        const ps = parseSess(cur);
+        if (ps) expiry = ps.expMs;
+        valid = verifySessionToken(cur);
+        if (valid) touchSession(cur);
+        token_fp = sessHash(cur).slice(0, 16);
       }
-      return json(res, 200, { valid, expiry, current_token: cur, maxAge: 7 * 864e5 });
+      return json(res, 200, { valid, expiry, token_fp, maxAge: 7 * 864e5 });
     }
     // list all logged-in web sessions across browsers/devices
     if (p === "/api/sessions" && req.method === "GET") {
       pruneSessions();
-      const c = (req.headers.cookie || "").match(/gsess=([A-Za-z0-9_.-]+)/);
+      const c = (req.headers.cookie || "").match(/(?:__Host-)?gsess=([A-Za-z0-9_.-]+)/);
       const curTok = c ? c[1] : null;
       const list = listSessions().map((s) => ({
         id: s.id,
-        current: s.token_hash === curTok,
+        current: !!curTok && (s.token_hash === sessHash(curTok) || s.token_hash === curTok),
         created: s.created,
         expiry: s.expiry,
         ip: s.ip,
@@ -833,9 +1062,21 @@ const server = http.createServer(async (req, res) => {
     }
     // revoke a session by id (only self-revoke allowed unless it's via the same cookie)
     if (p === "/api/session/revoke" && req.method === "POST") {
+      if (!authedViaKey(req) && !csrfOriginOk(req)) return json(res, 403, { error: "csrf" });
       const b = await readBody(req, true);
-      if (b.__bad || b.__too) return json(res, 400, { error: "bad json" });
-      const ok = revokeSessionById(Number(b.id));
+      if (b.__too) return json(res, 413, { error: "payload too large" });
+      if (b.__bad) return json(res, 400, { error: "bad json" });
+      const rid = Number(b.id);
+      if (!authedViaKey(req)) {
+        const cur = getSessToken(req);
+        if (!cur) return json(res, 403, { error: "forbidden" });
+        const ch = sessHash(cur);
+        let row = null;
+        try { row = db.prepare("SELECT token_hash FROM web_sessions WHERE id=?").get(rid); } catch {}
+        if (!row) return json(res, 404, { error: "not found" });
+        if (row.token_hash !== ch && row.token_hash !== cur) return json(res, 403, { error: "forbidden" });
+      }
+      const ok = revokeSessionById(rid);
       return json(res, ok ? 200 : 404, ok ? { ok: true } : { error: "not found" });
     }
     if (p === "/api/accounts" && req.method === "GET") {
@@ -853,6 +1094,8 @@ const server = http.createServer(async (req, res) => {
     }
     if (parts.length >= 4 && parts[0] === "accounts" && parts[2] === "messages" && req.method === "GET") {
       const email = decodeURIComponent(parts[1]), tid = decodeURIComponent(parts[3]);
+      maybeRefresh(email);
+      backfillBodies(email).catch(() => {});
       let msgs = MSGS_BY_THREAD.all(email, tid);
       // if any stored message lacks a body, fetch it live from Gmail (atom entries have no body)
       const needBody = msgs.some((m) => !m.body_html);
@@ -884,17 +1127,32 @@ const server = http.createServer(async (req, res) => {
     if (parts.length >= 3 && parts[0] === "accounts" && parts[2] === "messages") {
       const email = decodeURIComponent(parts[1]);
       const limit = +(url.searchParams.get("limit") || 50), offset = +(url.searchParams.get("offset") || 0);
-      if (req.method === "GET") return json(res, 200, RECENT.all(email, limit, offset));
-      if (req.method === "POST" && parts.length === 4 && parts[3] === "refresh") { syncAccount(email).then(() => json(res, 200, { ok: 1 })).catch((e) => json(res, 502, { error: String(e.message || e) })); return; }
+      if (req.method === "GET") { maybeRefresh(email); return json(res, 200, RECENT.all(email, limit, offset)); }
+      if (req.method === "POST" && parts.length === 4 && parts[3] === "refresh") {
+        if (!authedViaKey(req) && !csrfOriginOk(req)) return json(res, 403, { error: "csrf" });
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return json(res, 400, { error: "bad email" });
+        const now = Date.now();
+        const last = REFRESH_LAST.get(email) || 0;
+        if (now - last < 60000) return json(res, 429, { error: "throttle", retryAfter: Math.ceil((60000 - (now - last)) / 1000) });
+        REFRESH_LAST.set(email, now);
+        syncAccount(email).then(() => json(res, 200, { ok: 1 })).catch((e) => json(res, 502, { error: String(e.message || e) })); if (SPAM_ENABLED) spamSync([email]); return;
+      }
     }
     if (p === "/api/select" && req.method === "POST") {
+      if (!authedViaKey(req) && !csrfOriginOk(req)) return json(res, 403, { error: "csrf" });
       const b = await readBody(req, false);
       if (!b || b.__bad || b.__too) return json(res, 400, { error: "json" });
-      SELECTED = b.email || null; return json(res, 200, { ok: 1, selected: SELECTED });
+      return json(res, 200, { ok: 1, selected: selectAccount(b.email) });
     }
     if (p === "/api/selected" && req.method === "GET") return json(res, 200, { selected: SELECTED });
     // rotate API key: requires a valid full auth (session cookie or current X-API-Key). Returns the new key.
     if (p === "/api/rotate" && req.method === "POST") {
+      if (!authedViaKey(req) && !csrfOriginOk(req)) return json(res, 403, { error: "csrf" });
+      const b = await readBody(req, true);
+      if (b.__too) return json(res, 413, { error: "payload too large" });
+      if (b.__bad) return json(res, 400, { error: "bad json" });
+      if (b.password !== PASSWORD) { failAuth(ip); return json(res, 401, { error: "bad password" }); }
+      okAuth(ip);
       const newKey = "mh_live_" + crypto.randomBytes(32).toString("hex");
       db.prepare("UPDATE settings SET value=?, updated_at=? WHERE key='api_key'").run(newKey, Date.now());
       API_KEY = newKey; // live-update this process
@@ -910,10 +1168,11 @@ const server = http.createServer(async (req, res) => {
   }
   if (p === "/login.html") return serveFile(res, join(ROOT, "public", "login.html"));
   if (p.startsWith("/static/")) {
-    if (!authPage(req, res)) return json(res, 401, { error: "auth" });
+    if (!authPage(req, res)) { failAuth(ip); return json(res, 401, { error: "auth" }); }
+    okAuth(ip);
     return serveFile(res, join(ROOT, "public", p.slice(1)));
   }
-  if (p === "/logout") { res.writeHead(302, { Location: "/login.html", "Set-Cookie": "gsess=; Max-Age=0" }).end(); return; }
+  if (p === "/logout") { res.writeHead(302, { ...SEC_HDR, Location: "/login.html", "Set-Cookie": ["gsess=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0", "__Host-gsess=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"] }).end(); return; }
   json(res, 404, { error: "nf" });
   } catch (e) {
     if (!res.headersSent) json(res, 500, { error: "internal" });
@@ -929,8 +1188,12 @@ function serveFile(res, path) {
   const type = { html: "text/html", js: "application/javascript", css: "text/css" }[ext] || "text/plain";
   // HTML: always fresh (inline CSS/JS) so edits show immediately; assets: short cache
   const cache = ext === "html" ? "no-cache, no-store, must-revalidate" : "public, max-age=300";
-  res.writeHead(200, { "Content-Type": type, "Cache-Control": cache, "X-Content-Type-Options": "nosniff" });
+  res.writeHead(200, { "Content-Type": type, "Cache-Control": cache, ...SEC_HDR });
   res.end(readFileSync(real));
 }
 
 server.listen(PORT, HOST, () => console.log(`[gmail-inbox] http://${HOST}:${PORT}`));
+if (!SPAM_ENABLED) console.log("[gmail-inbox] spam-sync disabled (set SPAM_SYNC=1 to enable)");
+// spam sweep: 60s after startup (let account syncs settle), then hourly — only when SPAM_SYNC=1
+if (SPAM_ENABLED) setTimeout(() => spamSync(), 60_000);
+setInterval(() => { if (SPAM_ENABLED) spamSync(); }, SPAM_SYNC_MINUTES * 60_000);

@@ -18,8 +18,13 @@ function parseLine(l) {
   const idx = l.indexOf("|");
   if (idx <= 0) return { bad: true, reason: "no | separator" };
   const email = l.slice(0, idx).trim();
-  const rest = l.slice(idx + 1);
+  let rest = l.slice(idx + 1);
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return { bad: true, reason: "bad email format" };
+  const reasonBar = rest.lastIndexOf("|");
+  if (reasonBar >= 0) {
+    const tail = rest.slice(reasonBar + 1).trim();
+    if (tail !== "" && !/^\d{1,8}$/.test(tail)) rest = rest.slice(0, reasonBar);
+  }
   let pw = rest, tok = "";
   if (pw.endsWith("|")) pw = pw.slice(0, -1); // drop trailing empty 2FA delimiter
   const lastBar = pw.lastIndexOf("|");
@@ -35,15 +40,24 @@ function parseLine(l) {
 const logged = new Set(rd(LOGGED).split("\n").map((l) => l.split("|")[0].trim().toLowerCase()).filter(Boolean));
 const failedByEmail = {};
 for (const l of rd(FAILED).split("\n").filter(Boolean)) {
-  const [e, reason] = l.split("|");
-  if (e) failedByEmail[e.trim().toLowerCase()] = (reason || "?").trim();
+  const idx = l.indexOf("|");
+  if (idx <= 0) continue;
+  const e = l.slice(0, idx).trim();
+  const rest = l.slice(idx + 1);
+  let reason = "?";
+  const reasonBar = rest.lastIndexOf("|");
+  if (reasonBar >= 0) {
+    const tail = rest.slice(reasonBar + 1).trim();
+    if (tail !== "" && !/^\d{1,8}$/.test(tail)) reason = tail;
+  }
+  if (e) failedByEmail[e.toLowerCase()] = (reason || "?").trim();
 }
 
 let problems = 0, ok = 0, skip = 0;
 console.log(`Checking ${lines.length} accounts in list.txt`);
 for (const l of lines) {
   const p = parseLine(l);
-  if (p.bad) { problems++; console.log(`  [FORMAT] ${l.slice(0, 40)}… -> ${p.reason}`); continue; }
+  if (p.bad) { problems++; console.log(`  [FORMAT] ${l.split("|")[0]}… -> ${p.reason}`); continue; }
   const lower = p.email.toLowerCase();
   if (logged.has(lower)) { skip++; continue; } // already logged in, skip
   const fails = failedByEmail[lower];
