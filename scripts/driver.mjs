@@ -1,3 +1,5 @@
+// timestamped stdout (UTC HH:MM:SS on every line)
+for (const _k of ["log", "error", "warn"]) { const _f = console[_k].bind(console); console[_k] = (..._a) => _f(`[${new Date().toISOString().slice(11, 19)}]`, ..._a); }
 // Semi-auto Gmail login driver via CDP. stdin commands:
 //   email <addr>   type email + next
 //   pass <pw>      type password + submit

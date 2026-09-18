@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// timestamped stdout (UTC HH:MM:SS on every line)
+for (const _k of ["log", "error", "warn"]) { const _f = console[_k].bind(console); console[_k] = (..._a) => _f(`[${new Date().toISOString().slice(11, 19)}]`, ..._a); }
 // relogin-invalid: requeue quarantined cookies/invalid/*.json sessions for re-login.
 // Resolves each slug to credentials in loggedmail.txt (slug = email with [@.] -> _),
 // dedupes by lowercase email, appends missing ones to list.txt as full

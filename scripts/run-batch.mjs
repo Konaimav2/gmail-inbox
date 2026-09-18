@@ -850,6 +850,7 @@ async function loginOne(acc) {
               humanWaits++;
               if (humanWaits >= 3) {
                 log("-> Unknown screen persists after 3 human waits — marking failed (no infinite loop).");
+                await screenshot(email); // capture the wall for later eyes-on review
                 markFailed(email, "persistent-unknown", pw, tok); return false;
               }
               lastUnknown = ""; lastUnknownAt = Date.now(); continue;
@@ -857,6 +858,7 @@ async function loginOne(acc) {
             humanWaits++;
             if (humanWaits >= 3) {
               log("-> Unknown screen persists after 3 human waits — marking failed (no infinite loop).");
+              await screenshot(email); // capture the wall for later eyes-on review
               markFailed(email, "persistent-unknown", pw, tok); return false;
             }
             lastUnknown = ""; lastUnknownAt = Date.now(); continue;
@@ -1331,17 +1333,20 @@ async function main() {
   }
   } finally {
   log("-> Batch finished.");
-  cleanupList(positional.length >= 2);
+  // single-account runs (argv pw or env pw) must not drain the shared queue —
+  // only the attempted address may leave list.txt, and only via logged/failed.
+  cleanupList(positional.length >= 1);
   if (!NO_VNC_FLAG) { log("-> Clearing VNC stack...."); clearVnc(); }
   else { log("-> --no-vnc: skipping VNC cleanup"); }
   }
   process.exit(0);
 }
 // remove from list.txt any account now in loggedmail.txt (success) or failed.txt (hard fail),
-// so the next run only processes accounts that still need login. Only runs on full-list mode.
+// so the next run only processes accounts that still need login. Skipped entirely in
+// single-shot mode (one address given): the shared queue is not ours to drain.
 function cleanupList(singleShot) {
   try {
-    if (singleShot) return; // only clean when running the whole list
+    if (singleShot) { log("-> Single-account run: list.txt left untouched."); return; }
     const logged = new Set(readFileSync(LOGGED_FILE, "utf8").split("\n").map((l) => l.split("|")[0].trim().toLowerCase()).filter(Boolean));
     const failed = new Set(readFileSync(FAILED_FILE, "utf8").split("\n").map((l) => l.split("|")[0].trim().toLowerCase()).filter(Boolean));
     const done = new Set([...logged, ...failed]);

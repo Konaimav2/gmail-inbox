@@ -16,6 +16,10 @@ Usage:
   python3 tools/auth-checker.py --fix        # re-run run-batch for blocked
 """
 import json, time, sys, glob, re
+import datetime as _dt, builtins as _bi  # timestamped stdout (UTC HH:MM:SS)
+_op = _bi.print
+def print(*a, **k):
+    _op(f"[{_dt.datetime.now(_dt.timezone.utc).strftime('%H:%M:%S')}]", *a, **{**k, "flush": True})
 from pathlib import Path
 
 ROOT = Path("/root/projects/gmail-inbox")

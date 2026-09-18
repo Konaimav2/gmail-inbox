@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// timestamped stdout (UTC HH:MM:SS on every line)
+for (const _k of ["log", "error", "warn"]) { const _f = console[_k].bind(console); console[_k] = (..._a) => _f(`[${new Date().toISOString().slice(11, 19)}]`, ..._a); }
 // rotate-secrets: rotate PASSWORD (env), API_KEY + PUBLIC_TOKEN (SQLite settings table).
 // Backs up .env and the DB before rotating; never logs new secrets.
 import { readFileSync, writeFileSync, copyFileSync, mkdirSync, existsSync } from "node:fs";

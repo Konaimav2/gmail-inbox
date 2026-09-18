@@ -16,6 +16,10 @@ Usage:
 Logs: timestamped, no silent skip. Summary table at end + /tmp/gcp_report.txt
 """
 import os, re, sys, json, time, sqlite3
+import datetime as _dt, builtins as _bi  # timestamped stdout (UTC HH:MM:SS)
+_op = _bi.print
+def print(*a, **k):
+    _op(f"[{_dt.datetime.now(_dt.timezone.utc).strftime('%H:%M:%S')}]", *a, **{**k, "flush": True})
 os.environ.setdefault("DISPLAY", ":99")
 ROOT = "/root/projects/gmail-inbox"
 DB = f"{ROOT}/inbox.db"

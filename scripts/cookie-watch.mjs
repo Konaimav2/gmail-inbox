@@ -1,3 +1,5 @@
+// timestamped stdout (UTC HH:MM:SS on every line)
+for (const _k of ["log", "error", "warn"]) { const _f = console[_k].bind(console); console[_k] = (..._a) => _f(`[${new Date().toISOString().slice(11, 19)}]`, ..._a); }
 // Watch Chrome CDP (port 9222). When a Google session cookie (SID/SSID) appears,
 // dump all google.com cookies to cookies/<email>.json and confirm mail session.
 const CDP = "http://127.0.0.1:9222";

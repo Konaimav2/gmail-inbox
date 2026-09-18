@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// timestamped stdout (UTC HH:MM:SS on every line)
+for (const _k of ["log", "error", "warn"]) { const _f = console[_k].bind(console); console[_k] = (..._a) => _f(`[${new Date().toISOString().slice(11, 19)}]`, ..._a); }
 // check-creds: pre-flight audit of list.txt for likely-wrong passwords and format problems.
 // Does NOT hit Google — it flags obvious issues before the batch burns a login attempt.
 import { readFileSync, existsSync } from "node:fs";

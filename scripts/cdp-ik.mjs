@@ -1,3 +1,5 @@
+// timestamped stdout (UTC HH:MM:SS on every line)
+for (const _k of ["log", "error", "warn"]) { const _f = console[_k].bind(console); console[_k] = (..._a) => _f(`[${new Date().toISOString().slice(11, 19)}]`, ..._a); }
 // Pull ik + confirm from the live logged-in Gmail tab via CDP
 const list = await (await fetch("http://127.0.0.1:9222/json")).json();
 const page = list.find((t) => t.type === "page" && /mail\.google\.com/.test(t.url)) || list.find((t) => t.type === "page");

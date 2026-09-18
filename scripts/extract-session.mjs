@@ -1,3 +1,5 @@
+// timestamped stdout (UTC HH:MM:SS on every line)
+for (const _k of ["log", "error", "warn"]) { const _f = console[_k].bind(console); console[_k] = (..._a) => _f(`[${new Date().toISOString().slice(11, 19)}]`, ..._a); }
 // extract-session: dump cookies from the live Chrome session (manual login done in VNC)
 // and move the account into loggedmail.txt so the batch skips it.
 // Usage: node scripts/extract-session.mjs [email]

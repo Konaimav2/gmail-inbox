@@ -8,6 +8,11 @@ import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
+// timestamped stdout/stderr (UTC HH:MM:SS on every line)
+for (const _k of ["log", "error", "warn"]) {
+  const _f = console[_k].bind(console);
+  console[_k] = (..._a) => _f(`[${new Date().toISOString().slice(11, 19)}]`, ..._a);
+}
 const COOKIE_DIR = join(ROOT, "cookies");
 const DB_PATH = join(ROOT, "inbox.db");
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";

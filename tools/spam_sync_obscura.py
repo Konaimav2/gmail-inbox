@@ -6,6 +6,10 @@ Usage: python3 tools/spam_sync_obscura.py [email]
 Env:   OBSCURA_URL (default http://127.0.0.1:9222)
 """
 import os, re, sys, time, sqlite3
+import datetime as _dt, builtins as _bi  # timestamped stdout (UTC HH:MM:SS)
+_op = _bi.print
+def print(*a, **k):
+    _op(f"[{_dt.datetime.now(_dt.timezone.utc).strftime('%H:%M:%S')}]", *a, **{**k, "flush": True})
 ROOT = "/root/projects/gmail-inbox"
 DB = f"{ROOT}/inbox.db"
 OBSCURA_URL = os.environ.get("OBSCURA_URL", "http://127.0.0.1:9222")
