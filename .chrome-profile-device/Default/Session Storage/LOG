@@ -1,0 +1,5 @@
+2026/09/18-19:04:50.816 3535e9 Reusing MANIFEST /root/projects/gmail-inbox/.chrome-profile-device/Default/Session Storage/MANIFEST-000001
+2026/09/18-19:04:50.819 3535e9 Recovering log #3
+2026/09/18-19:04:50.820 3535e9 (ignoring error) /root/projects/gmail-inbox/.chrome-profile-device/Default/Session Storage/000003.log: dropping 32285 bytes; Corruption: checksum mismatch
+2026/09/18-19:04:50.820 3535e9 (ignoring error) /root/projects/gmail-inbox/.chrome-profile-device/Default/Session Storage/000003.log: dropping 867 bytes; Corruption: missing start of fragmented record(2)
+2026/09/18-19:04:50.821 3535e9 Reusing old log /root/projects/gmail-inbox/.chrome-profile-device/Default/Session Storage/000003.log 

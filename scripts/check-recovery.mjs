@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// check-recovery: audit recovery email/phone on https://myaccount.google.com/personal-info
-// for every account with a working cookie. Cookie-only, no passwords, no browser.
-// Recovery addresses are printed MASKED (first char + ***) — presence is what matters.
+// check-recovery: audit recovery email/phone (+2-Step state) on
+// https://myaccount.google.com/security for every account with a working cookie.
+// Cookie-only, no passwords, no browser. Values printed MASKED.
 // Usage: node scripts/check-recovery.mjs [email-substring-filter]
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -30,7 +30,7 @@ async function fetchPage(cookies) {
     for (const c of jar) { if (!c.domain || c.domain.indexOf("google.com") < 0) continue; if (!best.has(c.name) || JSON.stringify(rank(c)) > JSON.stringify(rank(best.get(c.name)))) best.set(c.name, c); }
     return [...best.values()].filter((c) => c.name !== "NID" && c.name !== "AEC").map((c) => `${c.name}=${c.value}`).join("; ");
   };
-  let jar = [...cookies], cur = "https://myaccount.google.com/personal-info?hl=en";
+  let jar = [...cookies], cur = "https://myaccount.google.com/security?hl=en";
   for (let hop = 0; hop < 8; hop++) {
     const res = await fetch(cur, { headers: { "User-Agent": UA, Cookie: hdr(jar) }, redirect: "manual" });
     for (const sc of (res.headers.getSetCookie ? res.headers.getSetCookie() : [])) {
@@ -47,25 +47,28 @@ async function fetchPage(cookies) {
   return { status: 599, body: "" };
 }
 
-// Section model learned from page markup: <div class="IlKlLe">Email|Phone</div> followed
-// by <div class="oeTldb"><div class="qqVS5">value</div></div> entries. Email section's
-// first entry is the primary address; further entries are recovery emails. "Add a
-// recovery ..." text means none set.
+// Section model from the /security page: <div class="IlKlLe">Recovery email|Recovery
+// phone</div> followed by <div class="ImPZoc">value</div> when set. Missing shows an
+// "Add ..." link/aria-label instead. 2-Step state reads from the
+// "Signing in with 2-Step Verification was turned on|off" heading.
 function parseRecovery(html) {
-  const out = { recoveryEmails: [], hasPhone: null, error: null };
-  const emailSec = html.split('IlKlLe">Email<')[1]?.split('IlKlLe">')[0] || "";
-  const phoneSec = html.split('IlKlLe">Phone<')[1]?.split('IlKlLe">')[0] || "";
+  const out = { recoveryEmails: [], hasPhone: null, phoneMasked: "", twoStep: "?", error: null };
+  const emailSec = html.split('IlKlLe">Recovery email<')[1]?.split('IlKlLe">')[0]
+    || html.split('IlKlLe">Email<')[1]?.split('IlKlLe">')[0] || ""; // personal-info fallback
+  const phoneSec = html.split('IlKlLe">Recovery phone<')[1]?.split('IlKlLe">')[0]
+    || html.split('IlKlLe">Phone<')[1]?.split('IlKlLe">')[0] || "";
   if (!emailSec && !phoneSec) { out.error = "sections not found (login wall?)"; return out; }
-  const vals = [...emailSec.matchAll(/oeTldb"><div class="qqVS5">([^<]{1,120})<\/div>/g)].map((m) => m[1].trim());
-  const primary = vals[0] || "";
-  out.recoveryEmails = vals.slice(1).filter((v) => v && v !== primary && !/^Add a recovery/i.test(v));
-  if (/Add a recovery email/i.test(emailSec) && !out.recoveryEmails.length) out.recoveryEmails = [];
-  if (/Add a recovery phone/i.test(phoneSec)) out.hasPhone = false;
-  else {
-    const pv = [...phoneSec.matchAll(/oeTldb"><div class="qqVS5">([^<]{1,40})<\/div>/g)].map((m) => m[1].trim());
-    out.hasPhone = pv.length > 0;
-    out.phoneMasked = pv.length ? mask(pv[0]) : "";
-  }
+  const grab = (sec) => [...sec.matchAll(/ImPZoc">([^<]{1,120})<\/div>/g)].map((m) => m[1].trim())
+    .filter((v) => v && !/^Add /i.test(v));
+  const allEmails = grab(emailSec).filter((v) => v.includes("@"));
+  out.recoveryEmails = allEmails.filter((v) => !/^Add /i.test(v));
+  if (/Add a recovery email|Add an auxiliary email/i.test(emailSec) && !out.recoveryEmails.length) out.recoveryEmails = [];
+  const pv = grab(phoneSec).filter((v) => !/^Add /i.test(v));
+  if (/Add a (mobile phone number|recovery phone)/i.test(phoneSec) && !pv.length) out.hasPhone = false;
+  else { out.hasPhone = pv.length > 0; out.phoneMasked = pv.length ? mask(pv[0]) : ""; }
+  let m2 = html.match(/ImPZoc">2-Step Verification is (on|off)/);
+  if (m2) out.twoStep = m2[1];
+  else { m2 = html.match(/2-Step Verification was turned (on|off)/); if (m2) out.twoStep = m2[1]; }
   return out;
 }
 
@@ -86,14 +89,15 @@ for (const f of files) {
   try {
     const cookies = JSON.parse(readFileSync(join(DIR, f), "utf8"));
     const { status, body } = await fetchPage(cookies);
-    if (status !== 200 || !/Personal info/.test(body)) { failed.push(`${email} (http ${status})`); console.log(`FAIL  ${email}  (http ${status})`); continue; }
+    if (status !== 200 || !/>(Security|Personal info)</.test(body)) { failed.push(`${email} (http ${status})`); console.log(`FAIL  ${email}  (http ${status})`); continue; }
     r = parseRecovery(body);
     if (r.error) { failed.push(`${email} (${r.error})`); console.log(`FAIL  ${email}  (${r.error})`); continue; }
   } catch (e) { failed.push(`${email} (${String(e.message || e).slice(0, 50)})`); console.log(`FAIL  ${email}  (fetch error)`); continue; }
   const em = r.recoveryEmails.map(mask).join(", ") || "—";
   const ph = r.hasPhone ? `yes${r.phoneMasked ? ` (${r.phoneMasked})` : ""}` : "no";
-  if (!r.recoveryEmails.length) { noRecovery.push(email); console.log(`NONE  ${email}  phone:${ph}`); }
-  else { withRecovery.push(email); console.log(`OK    ${email}  recovery:[${em}] phone:${ph}`); }
+  const tsv = `2sv:${r.twoStep}`;
+  if (!r.recoveryEmails.length) { noRecovery.push(email); console.log(`NONE  ${email}  phone:${ph} ${tsv}`); }
+  else { withRecovery.push(email); console.log(`OK    ${email}  recovery:[${em}] phone:${ph} ${tsv}`); }
   await sleep(2000);
 }
 console.log(`\n${files.length} checked: ${withRecovery.length} have recovery email, ${noRecovery.length} WITHOUT, ${failed.length} failed.`);
