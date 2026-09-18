@@ -5,7 +5,7 @@
 // Mail fetch never spawns a browser (it is HTTP elsewhere); VNC stack is batch-only.
 import { execSync, spawnSync, spawn } from "node:child_process";
 import crypto from "node:crypto";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync, appendFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync, appendFileSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -1244,7 +1244,18 @@ async function ensureBrowser(wantedProxy) {
 async function isDone(acc) {
   const cfile = join(COOKIE_DIR, acc.email.replace(/[@.]/g, "_") + ".json");
   if (existsSync(cfile)) {
+    // fresh cookie files were verified moments ago (this or a parallel run) —
+    // trust them without re-probing (a throttled probe false-negatives and would
+    // quarantine a good cookie, causing exactly the dupe re-login it prevents).
+    try {
+      const ageMs = Date.now() - statSync(cfile).mtimeMs;
+      const freshMs = Math.max(1, parseInt(process.env.BATCH_FRESH_MINUTES || "15", 10) || 15) * 60000;
+      if (ageMs < freshMs) { log(`-> Skipping ${acc.email} (fresh cookies, ${Math.round(ageMs / 1000)}s old).`); return true; }
+    } catch {}
     if (await cookieValid(acc.email)) return true;
+    // one retry before verdict — throttled probes look exactly like dead sessions
+    await sleep(5000);
+    if (await cookieValid(acc.email)) { log(`-> ${acc.email} valid on retry (transient probe failure).`); return true; }
     // dead/stale cookie: quarantine and retry the login
     try { const bad = join(COOKIE_DIR, "invalid"); mkdirSync(bad, { recursive: true, mode: 0o700 }); renameSync(cfile, join(bad, acc.email.replace(/[@.]/g, "_") + ".json")); log(`-> quarantined stale cookie ${acc.email}`); } catch {}
     return false;
