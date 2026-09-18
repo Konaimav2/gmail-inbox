@@ -223,7 +223,8 @@ const NO_VNC_FLAG = process.argv.slice(2).includes("--no-vnc");
 // --headless=new) while needing no viewer and no human. Phone-tap + TOTP still work.
 const XVFB_FLAG = process.argv.slice(2).includes("--xvfb") || !!process.env.XVFB_ONLY;
 const USE_SECURITY_CODE = process.argv.slice(2).includes("--security-code") || !!process.env.USE_SECURITY_CODE;
-if (!NO_VNC_FLAG) {
+if (!NO_VNC_FLAG && !XVFB_FLAG) {
+  log("-> Mode: VNC headful (default — watch + assist in the viewer; --xvfb/--no-vnc opt out)");
   sh(`pkill -u ${UID} -f "[X]vfb ${DISPLAY}" ; pkill -u ${UID} -f "[r]emote-debugging-port=9222" ; pkill -u ${UID} -f "[x]11vnc -display ${DISPLAY}" ; pkill -u ${UID} -f "[w]ebsockify 6080" ; pkill -u ${UID} -f "[c]hromium-browser --no-sandbox" ; sleep 1`);
 } else {
   log("-> --no-vnc: VNC/Xvfb disabled (headless Chrome only)");
@@ -792,10 +793,11 @@ async function loginOne(acc) {
   if (chooser) { await clickText("Use another account"); await sleep(2000); }
   // chooser resume: our signed-out account tile may already be listed (cookie relogin
   // lands here). Clicking it jumps straight to the password screen — same as a
-  // returning user, no identifier typing needed.
+  // returning user, no identifier typing needed. Pick the DEEPEST tile containing
+  // our email + "signed out" (Google nests avatar/text spans; parent clicks bubble).
   let resumed = false;
   try {
-    resumed = await realClick(`[...document.querySelectorAll('button,[role=button],a,li,div')].find(x=>(x.children||[]).length<=3 && (x.innerText||'').toLowerCase().includes(${JSON.stringify(email.toLowerCase())}) && /sign\\s*out/i.test(x.innerText||''))`);
+    resumed = await realClick(`[...document.querySelectorAll('li,[role=option],button,a,div')].filter(x=>{const t=(x.innerText||'').toLowerCase();return t.includes(${JSON.stringify(email.toLowerCase())}) && /signed\\s*out/.test(t);}).sort((a,b)=>(a.innerText||'').length-(b.innerText||'').length)[0]`);
     if (resumed) { log("-> Account tile found — resuming session (skipping email entry)...."); await sleep(2500); }
   } catch { resumed = false; }
   // email
