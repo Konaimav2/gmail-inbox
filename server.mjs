@@ -1,6 +1,6 @@
 // gmail-inbox: cookie-based multi-Gmail inbox API + web UI
 // Fetch: mail.google.com /h/ (embedded simls payload) with saved cookies
-import { readFileSync, readdirSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import http from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import crypto from "node:crypto";
@@ -1083,6 +1083,38 @@ const server = http.createServer(async (req, res) => {
       }
       const ok = revokeSessionById(rid);
       return json(res, ok ? 200 : 404, ok ? { ok: true } : { error: "not found" });
+    }
+    // manual snapshots from the web UI (K keybind): PNG preferred, HTML fallback.
+    // Timestamped per shot so repeated presses never overwrite. screenshots/ stays
+    // gitignored; files are 0600.
+    if (p === "/api/snapshot" && req.method === "POST") {
+      if (!authedViaKey(req) && !csrfOriginOk(req)) return json(res, 403, { error: "csrf" });
+      const b = await new Promise((resolve) => {
+        let s = "", too = false;
+        req.on("data", (d) => { s += d; if (s.length > 5 * 1024 * 1024) too = true; });
+        req.on("end", () => {
+          if (too) return resolve({ __too: true });
+          try { resolve(JSON.parse(s)); } catch { resolve({ __bad: true }); }
+        });
+      });
+      if (b.__too) return json(res, 413, { error: "payload too large" });
+      if (b.__bad || !b.data) return json(res, 400, { error: "bad snapshot" });
+      const kind = b.kind === "html" ? "html" : "png";
+      const base = String(b.name || "shot").replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 60) || "shot";
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const dir = join(ROOT, "screenshots", "manual");
+      try { mkdirSync(dir, { recursive: true, mode: 0o700 }); } catch {}
+      const file = `${stamp}-${base}.${kind}`;
+      try {
+        if (kind === "png") {
+          const m = String(b.data).match(/^data:image\/png;base64,(.+)$/);
+          if (!m) return json(res, 400, { error: "bad png" });
+          writeFileSync(join(dir, file), Buffer.from(m[1], "base64"), { mode: 0o600 });
+        } else {
+          writeFileSync(join(dir, file), `<!-- manual snapshot ${stamp} ${JSON.stringify(b.meta || {}).slice(0, 200)} -->\n` + String(b.data).slice(0, 4_000_000), { mode: 0o600 });
+        }
+      } catch { return json(res, 500, { error: "write failed" }); }
+      return json(res, 200, { ok: true, file });
     }
     if (p === "/api/accounts" && req.method === "GET") {
       const accts = LIST_ACCOUNTS.all().map((a) => {

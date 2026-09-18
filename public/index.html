@@ -182,7 +182,7 @@ a{color:var(--acc2)}
     <div class="panehead"><span class="panehead-t">Inbox</span><span class="panehead-n" id="thcount">0</span></div>
     <div id="list"></div>
   </div>
-  <div class="home" id="home"><div><div class="mark"><i class="fa-solid fa-envelope-open-text" aria-hidden="true"></i></div><h2>Select a message to read</h2><p>Pick a thread on the left — or press <span class="kbd">Enter</span> on it. <span class="kbd">Esc</span> goes back. Bodies render sandboxed (no scripts, safer views).</p></div></div>
+  <div class="home" id="home"><div><div class="mark"><i class="fa-solid fa-envelope-open-text" aria-hidden="true"></i></div><h2>Select a message to read</h2><p>Pick a thread on the left — or press <span class="kbd">Enter</span> on it. <span class="kbd">Esc</span> goes back, <span class="kbd">K</span> snapshots this view. Bodies render sandboxed (no scripts, safer views).</p></div></div>
   <div class="detailpane" id="detail">
     <div class="detailbar"><button onclick="closeDetail()"><i class="fa-solid fa-arrow-left" aria-hidden="true"></i> back</button><span class="subj" id="dsubj"></span></div>
     <iframe id="dbody" sandbox="" referrerpolicy="no-referrer" title="message body"></iframe>
@@ -191,6 +191,7 @@ a{color:var(--acc2)}
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script>
 let current=null, threads=[], accs=[];
+let lastThreadHtml='', lastThreadSubj=''; // memory copy for K snapshots (iframe is sandboxed)
 let openGen=0, accGen=0, openingTid=null; // stale-response guards
 const $=id=>document.getElementById(id);
 async function j(u){const r=await fetch(u);if(!r.ok)throw 0;return r.json();}
@@ -337,6 +338,7 @@ async function openThread(tid){
   if(!msgs.length){ toast('<i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> could not load this email'); closeDetail(); return; }
   $('dsubj').textContent=msgs[0]?.subject||'(no subject)'; $('dsubj').title=$('dsubj').textContent;
   const html=msgs.map(m=>`<div style="border-bottom:1px solid #e4e7ec;padding:14px 18px;font:13px system-ui;background:#f8fafc"><b>${esc(m.sender||'')}</b> ${m.sender_name?`<span style="color:#888">${esc(m.sender_name)}</span>`:''} ${fmt(m.ts)?`· ${fmt(m.ts)}`:''}<br>${m.recipients?`<span style="color:#888">To:</span> ${esc(m.recipients)}`:''}</div><div style="padding:16px 18px">${m.body_html?`<div style="font-size:14px;line-height:1.6">${stripDanger(m.body_html)}</div>`:`<div style="font-size:13px;color:#444;line-height:1.6">${esc(m.snippet||'(no body)')}</div>`}</div>`).join('<hr style="border:0;border-top:1px solid #eef1f5">');
+  lastThreadHtml=html; lastThreadSubj=$('dsubj').textContent;
   writeBody(ifr, html);
 }
 function stripDanger(h){ return String(h||'').replace(/<\/?(form|object|base)[^>]*>/gi,''); }
