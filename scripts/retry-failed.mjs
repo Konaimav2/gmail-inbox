@@ -46,6 +46,19 @@ let left = readFileSync(FAILED, "utf8").split("\n").filter(Boolean)
   .filter((l) => l.includes("|"))
   .map((l) => l.split("|")[0].trim())
   .filter((e) => pwmap.has(e.toLowerCase()));
+// fallback: cleanupList() removes processed accounts from list.txt, so failed
+// entries usually aren't there anymore — reuse the credentials stored in the
+// failed line itself (email|pw|tok|reason since P0-3).
+for (const l of readFileSync(FAILED, "utf8").split("\n").filter(Boolean)) {
+  if (!l.includes("|")) continue;
+  const p = parseLine(l);
+  if (!p || !p.pw) continue;
+  const key = p.email.toLowerCase();
+  if (left.some((e) => e.toLowerCase() === key)) continue;
+  if (pwmap.has(key)) continue;
+  pwmap.set(key, p);
+  left.push(p.email);
+}
 
 for (let pass = 1; pass <= 2 && left.length; pass++) {
   console.log(`pass ${pass}: ${left.length} to retry`);
