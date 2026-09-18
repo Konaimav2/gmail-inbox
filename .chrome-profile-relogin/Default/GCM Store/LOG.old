@@ -1,2 +1,3 @@
-2026/09/18-17:07:20.299 34b267 Creating DB /root/projects/gmail-inbox/.chrome-profile-relogin/Default/GCM Store since it was missing.
-2026/09/18-17:07:20.662 34b267 Reusing MANIFEST /root/projects/gmail-inbox/.chrome-profile-relogin/Default/GCM Store/MANIFEST-000001
+2026/09/18-17:17:46.582 34c090 Reusing MANIFEST /root/projects/gmail-inbox/.chrome-profile-relogin/Default/GCM Store/MANIFEST-000001
+2026/09/18-17:17:46.582 34c090 Recovering log #3
+2026/09/18-17:17:46.587 34c090 Reusing old log /root/projects/gmail-inbox/.chrome-profile-relogin/Default/GCM Store/000003.log 

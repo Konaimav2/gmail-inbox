@@ -1,2 +1,3 @@
-2026/09/18-17:07:16.987 34b290 Creating DB /root/projects/gmail-inbox/.chrome-profile-relogin/Default/Local Storage/leveldb since it was missing.
-2026/09/18-17:07:17.314 34b290 Reusing MANIFEST /root/projects/gmail-inbox/.chrome-profile-relogin/Default/Local Storage/leveldb/MANIFEST-000001
+2026/09/18-17:17:38.736 34c0af Reusing MANIFEST /root/projects/gmail-inbox/.chrome-profile-relogin/Default/Local Storage/leveldb/MANIFEST-000001
+2026/09/18-17:17:38.738 34c0af Recovering log #3
+2026/09/18-17:17:38.738 34c0af Reusing old log /root/projects/gmail-inbox/.chrome-profile-relogin/Default/Local Storage/leveldb/000003.log 
