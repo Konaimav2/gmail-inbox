@@ -14,11 +14,16 @@ through a tempmail-style web app and a cloud-mail-compatible API.
 - For the login script only: `x11vnc`, `websockify`, noVNC (`/opt/noVNC`), `Xvfb`,
   and ~1 GB free RAM. `scripts/run-batch.mjs` runs a preflight check and fails fast
   with a clear reason if the machine can't run it.
-- Browser: project-local Chromium, no system package needed —
-  `node scripts/get-chromium.mjs` downloads it once into `.chromium/` (gitignored).
+- Browser: project-local **real Google Chrome stable**, no system package needed —
+  `node scripts/get-chromium.mjs` downloads it once into `.chromium/` (gitignored;
+  `--testing` for the automation build instead).
   `run-batch` prefers it (`$CHROME_BIN` > `.chromium/` > system chrome);
   tweak flags without editing via `$CHROME_ARGS`, restart cadence via
   `$BROWSER_RESTART_EVERY` (default 8).
+- Modes: full VNC (`run-batch.mjs`, human assists in viewer) → `--xvfb` (headful
+  under Xvfb, no viewer — most human-like unattended mode; phone-tap/TOTP work)
+  → `--no-vnc` (headless, most flaggable). Automation signals are masked
+  (`AutomationControlled` off, UA normalized, webdriver/plugins/codecs spoofed).
 
 ## Run the web
 ```bash

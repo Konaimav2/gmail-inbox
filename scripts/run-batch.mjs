@@ -21,7 +21,8 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const LOCAL_CHROME = join(ROOT, ".chromium");
 const CHROME_CANDIDATES = [
   process.env.CHROME_BIN || "",
-  join(LOCAL_CHROME, "chrome-linux64", "chrome"),
+  join(LOCAL_CHROME, "chrome-real", "opt", "google", "chrome", "chrome"), // real stable (get-chromium default)
+  join(LOCAL_CHROME, "chrome-linux64", "chrome"), // chrome-for-testing (--testing)
   join(LOCAL_CHROME, "chrome-linux", "chrome"),
   join(LOCAL_CHROME, "chrome"),
   "/root/.agent-browser/browsers/chrome-150.0.7871.46/chrome",
@@ -38,7 +39,7 @@ const CHROME = (() => {
 // component/feature trims so the vendored binary stays lean. $CHROME_ARGS (space-
 // separated) appends operator tweaks without editing the script.
 const LOWMEM_ARGS = ["--disable-dev-shm-usage", "--disable-gpu", "--blink-settings=imagesEnabled=false"];
-const LEAN_ARGS = ["--disable-component-update", "--disable-sync", "--no-default-browser-check", "--disable-features=Translate,MediaRouter,OptimizationHints"];
+const LEAN_ARGS = ["--disable-component-update", "--disable-sync", "--no-default-browser-check", "--disable-features=Translate,MediaRouter,OptimizationHints", "--disable-blink-features=AutomationControlled"];
 const EXTRA_ARGS = (process.env.CHROME_ARGS || "").split(/\s+/).filter(Boolean);
 // Detect chrome-headless-shell binary (sibling of CHROME candidates) for --no-vnc runs; fallback to headless Chrome.
 const CHROME_HEADLESS_SHELL = (() => {
@@ -217,6 +218,10 @@ if (!["127.0.0.1", "localhost", "::1"].includes(VNC_BIND)) log(`!! VNC_BIND=${VN
 try { sh("ln -sf vnc.html /opt/noVNC/index.html"); } catch {}
 log("-> Setting up VNC and Chromium....");
 const NO_VNC_FLAG = process.argv.slice(2).includes("--no-vnc");
+// --xvfb: headful Chrome under Xvfb WITHOUT the VNC viewer (no x11vnc/websockify).
+// Renders like a real desktop browser (far less "insecure browser" flagging than
+// --headless=new) while needing no viewer and no human. Phone-tap + TOTP still work.
+const XVFB_FLAG = process.argv.slice(2).includes("--xvfb") || !!process.env.XVFB_ONLY;
 const USE_SECURITY_CODE = process.argv.slice(2).includes("--security-code") || !!process.env.USE_SECURITY_CODE;
 if (!NO_VNC_FLAG) {
   sh(`pkill -u ${UID} -f "[X]vfb ${DISPLAY}" ; pkill -u ${UID} -f "[r]emote-debugging-port=9222" ; pkill -u ${UID} -f "[x]11vnc -display ${DISPLAY}" ; pkill -u ${UID} -f "[w]ebsockify 6080" ; pkill -u ${UID} -f "[c]hromium-browser --no-sandbox" ; sleep 1`);
@@ -276,6 +281,15 @@ if (!NO_VNC_FLAG) {
   detach(wsCmd, [...wsPre, `--web=/opt/noVNC`, `${VNC_BIND}:6080`, `localhost:5900`]);
   log(`-> VNC ready: http://${VNC_BIND}:6080/  (password in .env VNC_PASSWORD)`);
   log("-> VNC stack is batch-only; mail fetch never spawns a browser");
+} else if (XVFB_FLAG) {
+  log("-> --xvfb: headful Chrome under Xvfb, no VNC viewer (human-like rendering, phone-tap/TOTP still work)...");
+  detach("Xvfb", [DISPLAY, "-screen", "0", "1366x900x24", "-ac"]);
+  await sleep(1500);
+  detach(chromeBinary(false), baseChromeArgs(false));
+  BROWSER_STARTED = true; CURRENT_PROXY = null; ACCOUNTS_SINCE_RESTART = 0;
+  log(`-> Chrome binary/mode: ${chromeBinary(false)} (headful Xvfb, no VNC + low-mem flags)`);
+  log("-> VNC stack is batch-only; mail fetch never spawns a browser");
+  await sleep(2500);
 } else {
   log("-> --no-vnc: skipping Xvfb/VNC, starting headless Chromium...");
   detach(chromeBinary(true), baseChromeArgs(true));
@@ -330,6 +344,49 @@ await reconcileFailed();
 
 // ------------------------------------------------ cdp helpers
 let ws, send, pageTarget;
+// stealth bundle: hide the automation signals Google's "browser may not be secure"
+// verdict keys on. Injected before ANY page script via addScriptToEvaluateOnNewDocument.
+// Paired with --disable-blink-features=AutomationControlled in baseChromeArgs.
+const STEALTH = `(() => {
+try {
+  Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  window.chrome = window.chrome || {};
+  window.chrome.runtime = window.chrome.runtime || {};
+  window.chrome.app = window.chrome.app || { isInstalled: false };
+  window.chrome.csi = window.chrome.csi || function () {};
+  const mime = (type, suffixes, desc) => ({ type, suffixes, description: desc, enabledPlugin: null });
+  const plug = (name, desc, mimes) => { const p = { name, description: desc, filename: 'internal-' + name.replace(/\\s/g, '') + '.so', length: mimes.length }; mimes.forEach((m, i) => { p[i] = m; m.enabledPlugin = p; }); return p; };
+  const pdfMimes = [mime('application/pdf', 'pdf', 'Portable Document Format'), mime('text/pdf', 'pdf', 'Portable Document Format')];
+  const plugins = [plug('Chrome PDF Viewer', 'Portable Document Format', pdfMimes), plug('Chromium PDF Viewer', 'Portable Document Format', pdfMimes)];
+  Object.defineProperty(navigator, 'plugins', { get: () => plugins });
+  Object.defineProperty(navigator, 'mimeTypes', { get: () => pdfMimes });
+  Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+  Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+  Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+  const _query = (window.Permissions && window.Permissions.prototype.query) || null;
+  if (_query) window.Permissions.prototype.query = function (p) {
+    if (p && p.name === 'notifications') return Promise.resolve({ state: 'default', onchange: null });
+    return _query.apply(this, arguments);
+  };
+  const _cpt = window.HTMLVideoElement && window.HTMLVideoElement.prototype.canPlayType;
+  if (_cpt) window.HTMLVideoElement.prototype.canPlayType = function (t) {
+    if (t && /mp4|avc1/.test(t)) return 'probably';
+    return _cpt.apply(this, arguments);
+  };
+  try {
+    Object.defineProperty(window, 'outerWidth', { get: () => window.innerWidth });
+    Object.defineProperty(window, 'outerHeight', { get: () => window.innerHeight });
+  } catch {}
+  try {
+    const _gp = window.WebGLRenderingContext && window.WebGLRenderingContext.prototype.getParameter;
+    if (_gp) window.WebGLRenderingContext.prototype.getParameter = function (p) {
+      if (p === 37445) return 'Intel Inc.';
+      if (p === 37446) return 'Intel Iris OpenGL Engine';
+      return _gp.apply(this, arguments);
+    };
+  } catch {}
+} catch {}
+})();`;
 async function connectCDP() {
   for (let i = 0; i < 30; i++) {
     try {
@@ -349,7 +406,14 @@ async function connectCDP() {
       ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); } };
       send = (method, params = {}) => new Promise((res) => { const i = ++id; pending.set(i, res); ws.send(JSON.stringify({ id: i, method, params })); });
       await send("Page.enable"); await send("Runtime.enable"); await send("Network.enable");
-      await send("Page.addScriptToEvaluateOnNewDocument", { source: `Object.defineProperty(navigator,'webdriver',{get:()=>undefined}); window.chrome=window.chrome||{runtime:{}};` });
+      // normalize UA: --headless=new advertises "HeadlessChrome" in the UA string —
+      // an instant automation tell. Rewrite to the stock desktop token.
+      try {
+        const uaR = await send("Runtime.evaluate", { expression: "navigator.userAgent", returnByValue: true });
+        const ua = uaR?.result?.result?.value || "";
+        if (/HeadlessChrome/i.test(ua)) await send("Network.setUserAgentOverride", { userAgent: ua.replace(/HeadlessChrome/g, "Chrome") });
+      } catch {}
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: STEALTH });
       return;
     } catch { await sleep(1000); }
   }
@@ -1119,7 +1183,7 @@ async function resetBrowser(proxy) {
   // Hot path reuses the single browser; this runs on CDP-unreachable, proxy switch,
   // or every BROWSER_RESTART_EVERY accounts (Google 8-account session cap).
   sh(`pkill -u ${UID} -f "[r]emote-debugging-port=9222" ; sleep 1 ; rm -rf ${PROFILE}`);
-  const headless = NO_VNC_FLAG;
+  const headless = NO_VNC_FLAG && !XVFB_FLAG; // --xvfb runs headful under Xvfb
   const args = baseChromeArgs(headless);
   if (proxy) {
     // route login Chrome through the proxy; keep localhost (CDP) unproxied
@@ -1231,7 +1295,7 @@ function normalizeProxy(raw) {
 }
 
 async function main() {
-  // CLI: node run-batch.mjs [email [password [2fa]]] [--proxy <url|proxy.txt>] [--no-vnc] [--security-code]
+  // CLI: node run-batch.mjs [email [password [2fa]]] [--proxy <url|proxy.txt>] [--no-vnc] [--xvfb] [--security-code]
   // single-account password also via env RUNBATCH_PW (+RUNBATCH_TOK); proxy via env RUNBATCH_PROXY
   const argv = process.argv.slice(2);
   // pull out --proxy <val> (and handle --proxy=val) and --no-vnc / --security-code flags
@@ -1243,6 +1307,7 @@ async function main() {
     if (argv[i] === "--proxy") { proxyFlagSeen = true; proxyArg = argv[i + 1] || ""; i++; }
     else if (argv[i].startsWith("--proxy=")) { proxyFlagSeen = true; proxyArg = argv[i].slice("--proxy=".length); }
     else if (argv[i] === "--no-vnc") noVnc = true;
+    else if (argv[i] === "--xvfb") { /* headful Xvfb, consumed via XVFB_FLAG global */ }
     else if (argv[i] === "--security-code") { /* opt-in: consumed here, active via USE_SECURITY_CODE global */ }
     else positional.push(argv[i]);
   }
@@ -1349,7 +1414,7 @@ async function main() {
   // single-account runs (argv pw or env pw) must not drain the shared queue —
   // only the attempted address may leave list.txt, and only via logged/failed.
   cleanupList(positional.length >= 1);
-  if (!NO_VNC_FLAG) { log("-> Clearing VNC stack...."); clearVnc(); }
+  if (!NO_VNC_FLAG || XVFB_FLAG) { log("-> Clearing VNC stack...."); clearVnc(); }
   else { log("-> --no-vnc: killing login browser...."); killBrowser(); }
   }
   process.exit(0);
