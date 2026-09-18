@@ -38,7 +38,8 @@ const CHROME = (() => {
 // Lightweight ladder: low-memory flags for both headful and headless Chrome, plus
 // component/feature trims so the vendored binary stays lean. $CHROME_ARGS (space-
 // separated) appends operator tweaks without editing the script.
-const LOWMEM_ARGS = ["--disable-dev-shm-usage", "--disable-gpu", "--blink-settings=imagesEnabled=false"];
+// NOTE: images stay ENABLED — disabling them breaks reCAPTCHA widgets and QR codes.
+const LOWMEM_ARGS = ["--disable-dev-shm-usage", "--disable-gpu"];
 const LEAN_ARGS = ["--disable-component-update", "--disable-sync", "--no-default-browser-check", "--disable-features=Translate,MediaRouter,OptimizationHints", "--disable-blink-features=AutomationControlled"];
 const EXTRA_ARGS = (process.env.CHROME_ARGS || "").split(/\s+/).filter(Boolean);
 // Detect chrome-headless-shell binary (sibling of CHROME candidates) for --no-vnc runs; fallback to headless Chrome.
@@ -1376,6 +1377,7 @@ async function main() {
   try {
   for (let accnumber = 0; accnumber < todo.length; accnumber++) {
     const acc = todo[accnumber];
+    CUR_ACC = acc.email || "";
     if (!positional.length && await isDone(acc)) { log(`-> Skipping ${acc.email} (valid cookies).`); continue; }
     const { email, pw, tok } = acc;
     // P1-2 cookie-first refresh (password-free): try existing cookies before any browser work.
@@ -1458,6 +1460,32 @@ function clearVnc() {
   killBrowser();
   try { sh(`pkill -u ${UID} -f "[x]11vnc -display ${DISPLAY}" ; pkill -u ${UID} -f "[w]ebsockify 6080" ; pkill -u ${UID} -f "[X]vfb ${DISPLAY}" ; true`); } catch {}
 }
-process.on("SIGINT", () => { log("-> Interrupted; clearing VNC stack...."); clearVnc(); process.exit(130); });
+process.on("SIGINT", () => { log("-> Interrupted; clearing VNC stack...."); try { process.stdin.setRawMode(false); } catch {} clearVnc(); process.exit(130); });
 process.on("SIGTERM", () => { clearVnc(); process.exit(143); });
+// terminal keybinds (TTY only): k = screenshot the login browser to
+// screenshots/manual/<ts>-<account>.png (repeatable). Ctrl-C keeps working.
+let CUR_ACC = "";
+if (process.stdin.isTTY) {
+  try {
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on("data", async (d) => {
+      const k = d.toString();
+      if (k === "\u0003") { log("-> Interrupted; clearing VNC stack...."); try { process.stdin.setRawMode(false); } catch {} clearVnc(); process.exit(130); }
+      if (k === "k" || k === "K") {
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+        const dir = join(ROOT, "screenshots", "manual");
+        try { mkdirSync(dir, { recursive: true, mode: 0o700 }); } catch {}
+        try {
+          if (typeof send === "function" && send) {
+            const s = await send("Page.captureScreenshot", { format: "png" });
+            const file = join(dir, `${stamp}-${(CUR_ACC || "batch").replace(/[^A-Za-z0-9._-]+/g, "_")}.png`);
+            writeFileSync(file, Buffer.from(s.result.data, "base64"), { mode: 0o600 });
+            log("-> Manual screenshot: " + file);
+          } else log("-> No browser attached yet — screenshot skipped");
+        } catch { log("-> Screenshot failed (no CDP page?)"); }
+      }
+    });
+  } catch {}
+}
 main().catch((e) => { log("FATAL " + String(e)); clearVnc(); process.exit(1); });

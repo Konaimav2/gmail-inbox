@@ -122,6 +122,9 @@ The script runs a VM preflight, sets up Xvfb + Chrome + VNC (noVNC), logs each a
 auto-handles challenges (phone-tap code relay, 2FA setup-key capture, selfie/home/phone
 skips), validates the session (`simls` payload) before saving, then clears the VNC stack.
 Watch the VNC page at `http://<host>:6080/vnc.html` (password from `.env` `VNC_PASSWORD`).  
+During the run: tap the phone number shown on "Verify it's you" screens, solve any
+captcha in the viewer, and press **`k` any time in the terminal** to screenshot the
+browser into `screenshots/manual/` (repeatable, timestamped per account).
 Success → `cookies/<user>.json` + added to `loggedmail.txt`. Failures → `failed.txt` with a reason.
 
 ### New: --no-vnc mode
