@@ -801,6 +801,7 @@ async function loginOne(acc) {
     const t0 = Date.now();
     let findingLogged = false, codeLogged = false, lastUnknown = null, lastUnknownAt = 0;
     let humanWaits = 0;
+    const MAX_WAITS = NO_VNC_FLAG ? 1 : 3; // headless: no eyes — one wait max
     let actedOn = null, actedAt = 0;
     const acted = async (url) => { if (actedOn === url && Date.now() - actedAt < 25000) return true; actedOn = url; actedAt = Date.now(); await sleep(2000); return false; };
     // re-enter the same polling logic below by looping here
@@ -837,6 +838,13 @@ async function loginOne(acc) {
           if (clicked) { log("-> Clicked reCAPTCHA, waiting 5s..."); await sleep(5000); continue; }
           await sleep(4000); continue;
         }
+        if (/This browser or app may not be secure|Sign in blocked|Access blocked|Account disabled|Couldn.t sign you in/i.test(T)) {
+          if (NO_VNC_FLAG) { log("-> Insecure-browser wall headless — needs headed VNC run; marking failed"); markFailed(email, "insecure-browser", pw, tok); return false; }
+          log("-> Security flag / access blocked — waiting for human (may unlock in VNC)");
+          const ok = await waitHuman(email, "blocked screen", "gmail");
+          if (ok) continue;
+          markFailed(email, "blocked", pw, tok); return false;
+        }
         const uk = (st.title || st.url || "").slice(0, 120);
         if (lastUnknown === uk && Date.now() - lastUnknownAt > 60000) {
           log("-> Stuck on unknown screen >60s; waiting for human assistance...");
@@ -848,7 +856,7 @@ async function loginOne(acc) {
             if (!MAILRE.test(v.url)) {
               log("-> Assist resolved then bounced back to verification — counting as stuck...");
               humanWaits++;
-              if (humanWaits >= 3) {
+              if (humanWaits >= MAX_WAITS) {
                 log("-> Unknown screen persists after 3 human waits — marking failed (no infinite loop).");
                 await screenshot(email); // capture the wall for later eyes-on review
                 markFailed(email, "persistent-unknown", pw, tok); return false;
@@ -856,7 +864,7 @@ async function loginOne(acc) {
               lastUnknown = ""; lastUnknownAt = Date.now(); continue;
             }
             humanWaits++;
-            if (humanWaits >= 3) {
+            if (humanWaits >= MAX_WAITS) {
               log("-> Unknown screen persists after 3 human waits — marking failed (no infinite loop).");
               await screenshot(email); // capture the wall for later eyes-on review
               markFailed(email, "persistent-unknown", pw, tok); return false;
@@ -891,6 +899,7 @@ async function loginOne(acc) {
   let lastUnknown = null;
   let lastUnknownAt = 0;
   let unknownWaits = 0; // cap human assists here too (mirror of challengeLoop)
+  const MAX_WAITS2 = NO_VNC_FLAG ? 1 : 3; // headless: no eyes — one wait max
   let actedOn = null;   // url of the last auto-skip action
   let actedAt = 0;
   const acted = async (url) => { if (actedOn === url && Date.now() - actedAt < 25000) return true; actedOn = url; actedAt = Date.now(); await sleep(2000); return false; };
@@ -1063,13 +1072,17 @@ async function loginOne(acc) {
       if (ok) continue;               // reached Gmail — keep going
       markFailed(email, "manual-verify", pw, tok); return false;
     }
-    if (/This browser or app may not be secure|Sign in blocked|Access blocked|Account disabled/i.test(T)) {
+    if (/This browser or app may not be secure|Sign in blocked|Access blocked|Account disabled|Couldn.t sign you in/i.test(T)) {
+      // Headless browsers get this wall purely for being automated — no human tap
+      // can fix it. Fail fast with a precise reason instead of burning 3×90s waits.
+      if (NO_VNC_FLAG) { log("-> Insecure-browser wall headless — needs headed VNC run; marking failed"); markFailed(email, "insecure-browser", pw, tok); return false; }
       log("-> Security flag / access blocked — waiting for human (may unlock in VNC)");
       const ok = await waitHuman(email, "blocked screen", "gmail");
       if (ok) continue;
       markFailed(email, "blocked", pw, tok); return false;
     }
     if (/Your account is at risk|unusual sign-in|Confirm you're not a robot|suspicious|high risk/i.test(T)) {
+      if (NO_VNC_FLAG) { log("-> Risk/robot challenge headless — needs eyes in VNC; marking failed"); markFailed(email, "risk/robot", pw, tok); return false; }
       log("-> Risk/robot challenge — waiting for human (may solve captcha in VNC)");
       const ok = await waitHuman(email, "risk/robot", "gmail");
       if (ok) continue;
@@ -1091,7 +1104,7 @@ async function loginOne(acc) {
       if (ok) {
         const v = await state();
         if (!MAILRE.test(v.url)) log("-> Assist resolved then bounced back to verification — counting as stuck...");
-        if (++unknownWaits >= 3) { markFailed(email, "persistent-unknown", pw, tok); break; }
+        if (++unknownWaits >= MAX_WAITS2) { markFailed(email, "persistent-unknown", pw, tok); break; }
         lastUnknown = ""; lastUnknownAt = Date.now(); continue;
       }
       markFailed(email, "timeout (" + uk.slice(0, 30) + ")", pw, tok); break;
@@ -1337,7 +1350,7 @@ async function main() {
   // only the attempted address may leave list.txt, and only via logged/failed.
   cleanupList(positional.length >= 1);
   if (!NO_VNC_FLAG) { log("-> Clearing VNC stack...."); clearVnc(); }
-  else { log("-> --no-vnc: skipping VNC cleanup"); }
+  else { log("-> --no-vnc: killing login browser...."); killBrowser(); }
   }
   process.exit(0);
 }
@@ -1358,9 +1371,15 @@ function cleanupList(singleShot) {
     if (removed > 0) log(`-> Cleaned list.txt: removed ${removed} processed account(s). ${kept.length} remaining.`);
   } catch (e) { log("!! cleanupList: " + String(e.message || e)); }
 }
-function clearVnc() {
+function killBrowser() {
+  // the login browser must die with the batch in EVERY mode — a leaked headless
+  // Chrome eats ~500MB and fails the next run's RAM preflight.
   for (const c of SPAWNED) { try { process.kill(c.pid, "SIGTERM"); } catch {} }
-  try { sh(`pkill -u ${UID} -f "[x]11vnc -display ${DISPLAY}" ; pkill -u ${UID} -f "[w]ebsockify 6080" ; pkill -u ${UID} -f "[r]emote-debugging-port=9222" ; pkill -u ${UID} -f "[X]vfb ${DISPLAY}" ; true`); } catch {}
+  try { sh(`pkill -u ${UID} -f "[r]emote-debugging-port=9222" ; true`); } catch {}
+}
+function clearVnc() {
+  killBrowser();
+  try { sh(`pkill -u ${UID} -f "[x]11vnc -display ${DISPLAY}" ; pkill -u ${UID} -f "[w]ebsockify 6080" ; pkill -u ${UID} -f "[X]vfb ${DISPLAY}" ; true`); } catch {}
 }
 process.on("SIGINT", () => { log("-> Interrupted; clearing VNC stack...."); clearVnc(); process.exit(130); });
 process.on("SIGTERM", () => { clearVnc(); process.exit(143); });
