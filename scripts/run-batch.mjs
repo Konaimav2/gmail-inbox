@@ -14,12 +14,19 @@ const maskSecret = (s) => String(s || "").slice(0, 2) + "****";
 const maskCode = (s) => String(s || "").slice(0, 2) + "****";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-// prefer system chrome; fall back to agent-browser
-// prefer known-working headful binaries over snap chromium (snap often fails to bind CDP headless)
+// Browser binary order: $CHROME_BIN > project-local .chromium/ (scripts/get-chromium.mjs,
+// no system package needed) > system chrome > agent-browser cache.
+// Local-first so the batch is self-contained (only VNC/Xvfb remain external) and the
+// binary + flags are managed in one place (baseChromeArgs + $CHROME_ARGS).
+const LOCAL_CHROME = join(ROOT, ".chromium");
 const CHROME_CANDIDATES = [
+  process.env.CHROME_BIN || "",
+  join(LOCAL_CHROME, "chrome-linux64", "chrome"),
+  join(LOCAL_CHROME, "chrome-linux", "chrome"),
+  join(LOCAL_CHROME, "chrome"),
   "/root/.agent-browser/browsers/chrome-150.0.7871.46/chrome",
   "google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "/usr/bin/chromium-browser",
-];
+].filter(Boolean);
 const CHROME = (() => {
   for (const c of CHROME_CANDIDATES) {
     try { const p = spawnSync("bash", ["-c", `command -v '${c}'`], { encoding: "utf8" }).stdout.trim(); if (p) return p; } catch {}
@@ -27,8 +34,12 @@ const CHROME = (() => {
   }
   return "chromium";
 })();
-// Lightweight ladder: low-memory flags for both headful and headless Chrome.
+// Lightweight ladder: low-memory flags for both headful and headless Chrome, plus
+// component/feature trims so the vendored binary stays lean. $CHROME_ARGS (space-
+// separated) appends operator tweaks without editing the script.
 const LOWMEM_ARGS = ["--disable-dev-shm-usage", "--disable-gpu", "--blink-settings=imagesEnabled=false"];
+const LEAN_ARGS = ["--disable-component-update", "--disable-sync", "--no-default-browser-check", "--disable-features=Translate,MediaRouter,OptimizationHints"];
+const EXTRA_ARGS = (process.env.CHROME_ARGS || "").split(/\s+/).filter(Boolean);
 // Detect chrome-headless-shell binary (sibling of CHROME candidates) for --no-vnc runs; fallback to headless Chrome.
 const CHROME_HEADLESS_SHELL = (() => {
   try { const p = spawnSync("bash", ["-c", `command -v 'chrome-headless-shell'`], { encoding: "utf8" }).stdout.trim(); if (p && existsSync(p)) return p; } catch {}
@@ -40,7 +51,7 @@ const CHROME_HEADLESS_SHELL = (() => {
 })();
 const chromeBinary = (headless) => (headless && CHROME_HEADLESS_SHELL ? CHROME_HEADLESS_SHELL : CHROME);
 function baseChromeArgs(headless) {
-  const a = [`--user-data-dir=${PROFILE}`, "--no-sandbox", "--no-first-run", "--disable-background-networking", "--window-size=1366,900", "--remote-debugging-port=9222", ...LOWMEM_ARGS];
+  const a = [`--user-data-dir=${PROFILE}`, "--no-sandbox", "--no-first-run", "--disable-background-networking", "--window-size=1366,900", "--remote-debugging-port=9222", ...LOWMEM_ARGS, ...LEAN_ARGS, ...EXTRA_ARGS];
   if (headless) a.push("--headless=new");
   a.push("about:blank");
   return a;
@@ -164,7 +175,8 @@ const CDP = "http://127.0.0.1:9222";
 const OUT = join(ROOT, ".batch-out.txt");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 mkdirSync(COOKIE_DIR, { recursive: true, mode: 0o700 });
-const log = (s) => { const line = s; console.log(line); try { appendFileSync(OUT, line + "\n", { mode: 0o600 }); } catch {} };
+const ts = () => new Date().toISOString().slice(11, 19); // HH:MM:SS (UTC) on every line
+const log = (s) => { const line = `[${ts()}] ${s}`; console.log(line); try { appendFileSync(OUT, line + "\n", { mode: 0o600 }); } catch {} };
 const sh = (cmd, opts = {}) => { try { return spawnSync("bash", ["-c", cmd], { encoding: "utf8", ...opts }).stdout.trim(); } catch { return ""; } };
 const UID = sh("id -u") || String(process.getuid?.() ?? "");
 
@@ -481,8 +493,17 @@ async function waitHuman(email, label, mode = "any", timeoutMs = 90000) {
     await sleep(4000);
     const u = await evalJs("location.href") || "";
     const T = (await evalJs("document.body.innerText") || "").slice(0, 400);
-    // real success: reached Gmail inbox
-    if (/\/mail\.google\.com\/mail/.test(u)) { log(`-> ${label}: reached Gmail — resolved`); return true; }
+    // real success: reached Gmail inbox — must STICK for a second poll (Google
+    // often bounces mail URL back to the verification wall; a single sighting
+    // is a false "resolved" that wastes a full 90s human-wait cycle).
+    if (/\/mail\.google\.com\/mail/.test(u)) {
+      await sleep(4000);
+      const u2 = await evalJs("location.href") || "";
+      if (/\/mail\.google\.com\/mail/.test(u2)) { log(`-> ${label}: reached Gmail (confirmed) — resolved`); return true; }
+      log(`-> ${label}: Gmail sighting bounced back to challenge — still waiting...`);
+      lastUrl = u2;
+      continue;
+    }
     // still on a verification/QR/captcha screen? keep waiting (not done yet)
     if (/QR|scan|security code|Enter the code|verify|Captcha|captcha|I'?m not a robot/i.test(T) && !/\/mail\.google/.test(u)) {
       continue;
@@ -821,10 +842,18 @@ async function loginOne(acc) {
           log("-> Stuck on unknown screen >60s; waiting for human assistance...");
           const ok = await waitHuman(email, "unknown screen", "gmail");
           if (ok) {
-            // waitHuman claims "reached Gmail", but if we're STILL on the same unknown
-            // page the next iteration, that success was a false positive (the account
-            // is bouncing back to a verification wall). Cap repeated human waits so a
-            // stuck account can't loop forever.
+            // waitHuman confirmed a STICKY Gmail page (double-poll), but re-verify:
+            // if we're not in the inbox right now, the session bounced again.
+            const v = await state();
+            if (!MAILRE.test(v.url)) {
+              log("-> Assist resolved then bounced back to verification — counting as stuck...");
+              humanWaits++;
+              if (humanWaits >= 3) {
+                log("-> Unknown screen persists after 3 human waits — marking failed (no infinite loop).");
+                markFailed(email, "persistent-unknown", pw, tok); return false;
+              }
+              lastUnknown = ""; lastUnknownAt = Date.now(); continue;
+            }
             humanWaits++;
             if (humanWaits >= 3) {
               log("-> Unknown screen persists after 3 human waits — marking failed (no infinite loop).");
@@ -859,6 +888,7 @@ async function loginOne(acc) {
   let codeLogged = false;
   let lastUnknown = null;
   let lastUnknownAt = 0;
+  let unknownWaits = 0; // cap human assists here too (mirror of challengeLoop)
   let actedOn = null;   // url of the last auto-skip action
   let actedAt = 0;
   const acted = async (url) => { if (actedOn === url && Date.now() - actedAt < 25000) return true; actedOn = url; actedAt = Date.now(); await sleep(2000); return false; };
@@ -1056,7 +1086,12 @@ async function loginOne(acc) {
       // then if still not resolved, skip.
       log("-> Stuck on unknown screen >60s; waiting for human assistance in VNC...");
       const ok = await waitHuman(email, "unknown screen", "gmail");
-      if (ok) { lastUnknown = ""; lastUnknownAt = Date.now(); continue; }
+      if (ok) {
+        const v = await state();
+        if (!MAILRE.test(v.url)) log("-> Assist resolved then bounced back to verification — counting as stuck...");
+        if (++unknownWaits >= 3) { markFailed(email, "persistent-unknown", pw, tok); break; }
+        lastUnknown = ""; lastUnknownAt = Date.now(); continue;
+      }
       markFailed(email, "timeout (" + uk.slice(0, 30) + ")", pw, tok); break;
     }
   }

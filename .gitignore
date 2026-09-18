@@ -21,6 +21,7 @@ failed.txt*
 accounts.txt
 .batch-out.txt
 .impeccable/
+/.chromium/
 
 # logs
 *.log

@@ -14,6 +14,11 @@ through a tempmail-style web app and a cloud-mail-compatible API.
 - For the login script only: `x11vnc`, `websockify`, noVNC (`/opt/noVNC`), `Xvfb`,
   and ~1 GB free RAM. `scripts/run-batch.mjs` runs a preflight check and fails fast
   with a clear reason if the machine can't run it.
+- Browser: project-local Chromium, no system package needed —
+  `node scripts/get-chromium.mjs` downloads it once into `.chromium/` (gitignored).
+  `run-batch` prefers it (`$CHROME_BIN` > `.chromium/` > system chrome);
+  tweak flags without editing via `$CHROME_ARGS`, restart cadence via
+  `$BROWSER_RESTART_EVERY` (default 8).
 
 ## Run the web
 ```bash
