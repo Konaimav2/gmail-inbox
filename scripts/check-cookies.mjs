@@ -31,7 +31,11 @@ async function fetchWithJar(cookies, url) {
       const dm = (sc.match(/Domain=([^;]+)/i) || [])[1] || "google.com";
       const pth = (sc.match(/Path=([^;]+)/i) || [])[1] || "/";
       const existing = jar.find((c) => c.name === name);
-      if (existing) existing.value = value; else jar.push({ name, value, domain: dm, path: pth, secure: /Secure/i.test(sc), expires: -1 });
+      // never persist a session-killer: Google clears SID/SSID/1PSID by setting them
+      // empty/short on logout walls — writing that back would murder a good cookie.
+      if (/^(SID|SSID|__Secure-1PSID|__Secure-3PSID|SAPISID|APISID|HSID|SSID)$/.test(name) && value.length < 20) continue;
+      if (existing) existing.value = value;
+      else if (value) jar.push({ name, value, domain: dm, path: pth, secure: /Secure/i.test(sc), expires: -1 });
     }
     if (res.status >= 300 && res.status < 400) { const loc = res.headers.get("location"); if (!loc) return { status: res.status, body: "" }; cur = new URL(loc, cur).toString(); continue; }
     return { status: res.status, body: await res.text(), jar };
