@@ -4,10 +4,12 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$(mktemp)"
+[ -f "$ROOT/.env" ] && set -a && . "$ROOT/.env" && set +a
+[ -f "$ROOT/.env" ] || { echo "ALERT: .env belum ada — copy .env.example ke .env lalu isi"; exit 0; }
 
 # local API reachable? (native routes need X-API-Key)
 if ! curl -s -m 15 -H "X-API-Key: $(python3 -c "import sqlite3;print(sqlite3.connect('$ROOT/inbox.db').execute(\"select value from settings where key='api_key'\").fetchone()[0])")" \
-  http://127.0.0.1:8790/api/accounts > "$OUT" 2>/dev/null; then
+  http://127.0.0.1:${PORT:-8790}/api/accounts > "$OUT" 2>/dev/null; then
   echo "ALERT: local API unreachable (is gmail-inbox running?)"
   rm -f "$OUT"
   exit 0
@@ -30,8 +32,9 @@ PY
 rm -f "$OUT"
 
 # public edge
-code="$(curl -s -m 15 -o /dev/null -w '%{http_code}' https://mailg.arraffi.my.id/login.html || echo 000)"
+EDGE_URL="${EDGE_URL:-}"
+code="$( [ -n "$EDGE_URL" ] && curl -s -m 15 -o /dev/null -w '%{http_code}' "$EDGE_URL" || echo skip )"
 echo "edge_http=$code"
-if [ "$code" != "200" ] && [ "$code" != "302" ]; then
+if [ "$code" != "skip" ] && [ "$code" != "200" ] && [ "$code" != "302" ]; then
   echo "ALERT: public edge returned $code"
 fi

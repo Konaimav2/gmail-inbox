@@ -46,6 +46,6 @@ NOVNC_DIR="${NOVNC_DIR:-/opt/noVNC}"
 echo $! > "$VNC_DIR/websockify.pid"
 
 echo "READY"
-echo "noVNC:  http://192.25.205.17:6080/vnc.html"
+echo "noVNC:  http://${VNC_PUBLIC_HOST:-127.0.0.1}:6080/vnc.html"
 echo "VNC pass: $VNCPASS"
 echo "Chrome CDP: http://127.0.0.1:9222/json"
