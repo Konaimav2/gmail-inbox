@@ -2,7 +2,7 @@
 // timestamped stdout (UTC HH:MM:SS on every line)
 for (const _k of ["log", "error", "warn"]) { const _f = console[_k].bind(console); console[_k] = (..._a) => _f(`[${new Date().toISOString().slice(11, 19)}]`, ..._a); }
 // relogin-invalid: requeue quarantined cookies/invalid/*.json sessions for re-login.
-// Resolves each slug to credentials in loggedmail.txt (slug = email with [@.] -> _),
+// Resolves each slug to credentials in logged.txt (slug = email with [@.] -> _),
 // dedupes by lowercase email, appends missing ones to list.txt as full
 // email|pw|tok lines. Never prints secrets — emails and counts only.
 // Usage: node scripts/relogin-invalid.mjs [--dry-run]
@@ -15,8 +15,8 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DRY = process.argv.includes("--dry-run");
 const slug = (email) => email.replace(/[@.]/g, "_") + ".json";
 
-const logged = existsSync(join(ROOT, "loggedmail.txt"))
-  ? readFileSync(join(ROOT, "loggedmail.txt"), "utf8").split("\n").filter(Boolean)
+const logged = existsSync(join(ROOT, "logged.txt"))
+  ? readFileSync(join(ROOT, "logged.txt"), "utf8").split("\n").filter(Boolean)
   : [];
 const credBySlug = new Map(); // slug -> full line
 for (const l of logged) {
@@ -40,13 +40,13 @@ for (const f of invalid) {
   if (listed.has(email)) { skipped.push(email); continue; }
   queued.push({ email, line });
 }
-if (DRY) console.log("(dry run — list.txt untouched)");
+if (DRY) console.log("(dry run — failed.txt untouched)");
 else for (const q of queued) {
-  appendFileSync(join(ROOT, "list.txt"), q.line + "\n", { mode: 0o600 });
+  appendFileSync(join(ROOT, "failed.txt"), q.line + "\n", { mode: 0o600 });
   listed.add(q.email);
 }
 console.log(`invalid cookies: ${invalid.length}`);
 console.log(`requeued to list.txt: ${queued.length}${queued.length ? " (" + queued.map((q) => q.email).join(", ") + ")" : ""}`);
 console.log(`already in list.txt: ${skipped.length}`);
-console.log(`no credentials in loggedmail.txt: ${missing.length}${missing.length ? " (" + missing.join(", ") + ")" : ""}`);
+console.log(`no credentials in logged.txt: ${missing.length}${missing.length ? " (" + missing.join(", ") + ")" : ""}`);
 console.log(DRY ? "dry run done" : "next: node scripts/run-batch.mjs");

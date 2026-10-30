@@ -38,7 +38,7 @@ const KEEPALIVE_HOURS = +(ENV.KEEPALIVE_HOURS || 12); // P2-4b keepalive interva
 // spam gate: enabled only when SPAM_SYNC=1 (default OFF)
 import { spawn as _spawn } from "node:child_process";
 const SPAM_ENABLED = ENV.SPAM_SYNC === "1";
-const SPAM_PYTHON = ENV.SPAM_PYTHON || "/root/temp/token-harbor/.venv/bin/python3";
+const SPAM_PYTHON = ENV.SPAM_PYTHON || "python3";
 const SPAM_SYNC_MINUTES = +(ENV.SPAM_SYNC_MINUTES || 60);
 let _spamRunning = false;
 function spamSync(emails = []) {
@@ -283,6 +283,7 @@ async function fetchInbox(email, q = "in:anywhere newer_than:20d") {
   const acct = GET_ACCOUNT.get(email);
   if (!acct) throw new Error("no account");
   const cf = join(COOKIE_DIR, acct.cookie_file);
+  if (!existsSync(cf)) throw new Error(`cookie file hilang: ${acct.cookie_file} (perlu relogin)`);
   const cookies = JSON.parse(readFileSync(cf, "utf8"));
   // merge: atom feed (up to ~20 inbox items) + adaptive /h/ split (older / other labels).
   // Dedupe by thread/msg id — atom gives real subjects/senders, /h/ adds bodies + coverage.
@@ -376,6 +377,7 @@ async function fetchThreadBody(email, threadId) {
   const acct = GET_ACCOUNT.get(email);
   if (!acct) throw new Error("no account");
   const cf = join(COOKIE_DIR, acct.cookie_file);
+  if (!existsSync(cf)) throw new Error(`cookie file hilang: ${acct.cookie_file} (perlu relogin)`);
   const cookies = JSON.parse(readFileSync(cf, "utf8"));
   const url = `https://mail.google.com/mail/u/0/h/?v=c&th=${encodeURIComponent(threadId)}`;
   let { status, body, jar } = await Promise.race([
@@ -517,7 +519,9 @@ async function checkMail(email) {
   const acct = GET_ACCOUNT.get(email);
   if (!acct) return;
   try {
-    const cookies = JSON.parse(readFileSync(join(COOKIE_DIR, acct.cookie_file), "utf8"));
+    const cf2 = join(COOKIE_DIR, acct.cookie_file);
+    if (!existsSync(cf2)) throw new Error(`cookie file hilang: ${acct.cookie_file} (perlu relogin)`);
+    const cookies = JSON.parse(readFileSync(cf2, "utf8"));
     const { status, body: x } = await fetchWithJar(cookies, "https://mail.google.com/mail/u/0/feed/atom");
     if (status !== 200) {
       // stale session or rate limit — log and trigger full re-sync
@@ -558,6 +562,61 @@ async function keepalive() {
   }
 }
 if (KEEPALIVE_HOURS > 0) setInterval(keepalive, KEEPALIVE_HOURS * 3600 * 1000);
+
+// ---- warmer internal: rotasi cookie + keepalive browser (tanpa cron) ----
+const WARM_MINUTES = +(ENV.WARM_MINUTES || 20);
+let __warmBusy = false;
+function __runNode(args, timeoutMs) {
+  return new Promise((res) => {
+    const p = _spawn(process.execPath, args, { cwd: ROOT });
+    let out = "";
+    const to = setTimeout(() => { try { p.kill("SIGKILL"); } catch {} }, timeoutMs);
+    p.stdout.on("data", (d) => (out += d));
+    p.stderr.on("data", (d) => (out += d));
+    p.on("close", (code) => { clearTimeout(to); res({ code, out }); });
+    p.on("error", (e) => { clearTimeout(to); res({ code: -1, out: String(e.message) }); });
+  });
+}
+function __runDetached(cmd, args) {
+  return new Promise((res) => {
+    const p = _spawn(cmd, args, { cwd: ROOT });
+    let out = "";
+    p.stdout.on("data", (d) => (out += d));
+    p.on("close", (code) => res({ code, out }));
+    p.on("error", () => res({ code: -1, out: "" }));
+  });
+}
+async function warmTick(reason) {
+  if (__warmBusy) return;
+  __warmBusy = true;
+  const t0 = Date.now();
+  try {
+    const batch = await __runDetached("pgrep", ["-f", "scripts/run-batch.mjs"]);
+    if (batch.code === 0 && batch.out.trim()) {
+      console.log(`[warm] skip: batch login sedang jalan (${batch.out.trim().split("\n")[0]})`);
+      return;
+    }
+    const r = await __runNode(["scripts/refresh-cookies.mjs"], 180000);
+    const lines = String(r.out).split("\n");
+    const alive = lines.filter((l) => l.includes(": ALIVE")).map((l) => l.split(":")[0].trim());
+    const dead = lines.filter((l) => l.includes(": DEAD")).length;
+    const rot = (String(r.out).match(/(\d+) cookie dirotasi/) || [0, 0])[1];
+    console.log(`[warm] ${reason}: alive=${alive.length} dead=${dead} rotasi=${rot} (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
+    if (!alive.length) { console.log("[warm] keepalive skip: nggak ada akun alive"); return; }
+    const k = await __runNode(["scripts/keepalive.mjs", ...alive], 900000);
+    const ok = (String(k.out).match(/:\s*ALIVE\b/g) || []).length;
+    console.log(`[warm] keepalive: ${ok}/${alive.length} alive (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
+  } catch (e) {
+    console.log(`[warm] error: ${String(e && e.message).slice(0, 140)}`);
+  } finally {
+    __warmBusy = false;
+  }
+}
+if (WARM_MINUTES > 0) {
+  console.log(`[warm] aktif tiap ${WARM_MINUTES} menit (refresh cookie + keepalive browser)`);
+  setTimeout(() => warmTick("start"), 45000);
+  setInterval(() => warmTick("tick"), WARM_MINUTES * 60 * 1000);
+}
 else console.log("[gmail-inbox] keepalive disabled (KEEPALIVE_HOURS=0)");
 
 // ---- SSE + selected-account polling (P2-5: poll ONLY while viewers exist) ----

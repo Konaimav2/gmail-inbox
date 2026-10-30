@@ -181,6 +181,22 @@ node scripts/check-cookies.mjs   # validates each cookie against real Gmail, mov
 ```
 The server also auto-quarantines a cookie when sync hits a dead session.
 
+## Session upkeep (keeper)
+
+A cookie file is a snapshot. Google keeps rotating `__Secure-1PSIDTS`, so a snapshot alone goes stale within hours. Two scripts keep the sessions alive:
+
+```bash
+node scripts/refresh-cookies.mjs             # probe Gmail, merge rotated Set-Cookie back into cookies/*.json
+node scripts/refresh-cookies.mjs --dry       # report only, no write
+node scripts/keepalive.mjs                   # real Chrome per profile: inject fresh cookies, open Gmail, reload
+node scripts/keepalive.mjs a@x.com b@x.com   # only these accounts
+bash scripts/warm.sh                         # refresh -> keepalive for ALIVE accounts only
+```
+
+`server.mjs` runs the same cycle itself every `WARM_MINUTES` (default 20) — no cron needed. It skips while a batch login runs (profile lock) and logs `[warm] start: alive=N dead=M rotasi=K`.
+
+Do not delete `Default/Cookies` inside a profile: device continuity is what stops Google treating every login as a new device. `--fresh-profile` is for when you actually want that.
+
 ## Activity ping
 Server fetches each Gmail every `SYNC_MINUTES` (default 300 = 5h) to keep sessions
 active. Realtime new-mail check runs every `MONITOR_SECONDS` (default 120s) for the

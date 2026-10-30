@@ -105,11 +105,11 @@ for (const f of readdirSync(SCAN).filter((x) => x.endsWith(".json") && x !== "in
     bad++;
     if (HEAL) console.log(`STILL-DEAD  ${f}  (${r.why})`);
     else {
-      try { renameSync(join(DIR, f), join(BAD, f)); console.log(`MOVE  ${f}  (${r.why}) -> cookies/invalid/`); }
+      if (!process.argv.includes("--dry")) try { renameSync(join(DIR, f), join(BAD, f)); console.log(`MOVE  ${f}  (${r.why}) -> cookies/invalid/`); }
       catch (e) { console.log(`FAIL  ${f}  (${r.why}; move error ${e.message})`); }
     }
   }
   await sleep(HEAL ? 2000 : 800); // heal paces slower — verdicts must be trustworthy
 }
-console.log(`\nChecked: ${ok} valid (${refreshed} rotated), ${bad} invalid/moved.`);
+console.log(`\nChecked: ${ok} valid (${refreshed} rotated), ${bad} invalid${process.argv.includes("--dry") ? " (dry)" : "/moved"}.`);
 process.exit(bad ? 1 : 0);

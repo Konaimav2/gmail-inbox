@@ -42,3 +42,12 @@ _backup_files/
 
 # agent handover (local only)
 HANDOVER.md
+
+# runtime artifacts (jangan pernah ke-commit)
+.chrome-profiles/
+.chrome-profile*/
+inbox.db-wal
+inbox.db-shm
+_trash/
+cookies/
+backups/

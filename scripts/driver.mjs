@@ -11,7 +11,8 @@ for (const _k of ["log", "error", "warn"]) { const _f = console[_k].bind(console
 // Auto-dumps cookies to cookies/<email>.json when session cookie appears after login.
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import readline from "node:readline";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
